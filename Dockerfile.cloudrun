@@ -1,0 +1,29 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1
+WORKDIR /app
+
+# Minimal runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for locked dependency installs
+RUN pip install --no-cache-dir uv
+
+COPY . .
+
+# Install project and dependencies into .venv using the uv lockfile
+RUN uv sync --frozen --no-dev \
+    && chmod +x /app/entrypoint.sh
+ENV PATH="/app/.venv/bin:${PATH}"
+
+# Non-root user
+RUN useradd --create-home --shell /bin/bash app \
+    && chown -R app:app /app
+USER app
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/entrypoint.sh"]

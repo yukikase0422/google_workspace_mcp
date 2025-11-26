@@ -1,0 +1,12 @@
+# Cloud Build configuration to build with Dockerfile.cloudrun
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-t'
+      - '$_REGION-docker.pkg.dev/$_PROJECT_ID/$_REPO/$_IMAGE'
+      - '-f'
+      - Dockerfile.cloudrun
+      - .
+images:
+  - '$_REGION-docker.pkg.dev/$_PROJECT_ID/$_REPO/$_IMAGE'
