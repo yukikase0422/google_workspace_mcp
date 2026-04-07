@@ -2147,8 +2147,9 @@ async def copy_drive_file(
     service,
     user_google_email: str,
     file_id: str,
-    new_name: Optional[str] = None,
-    parent_folder_id: str = "root",
+    name: Optional[str] = None,
+    parent_folder_id: Optional[str] = None,
+    description: Optional[str] = None,
 ) -> str:
     """
     Creates a copy of an existing Google Drive file.
@@ -2159,14 +2160,16 @@ async def copy_drive_file(
     Args:
         user_google_email (str): The user's Google email address. Required.
         file_id (str): The ID of the file to copy. Required.
-        new_name (Optional[str]): New name for the copied file. If not provided, uses "Copy of [original name]".
-        parent_folder_id (str): The ID of the folder where the copy should be created. Defaults to 'root' (My Drive).
+        name (Optional[str]): New name for the copied file. If not provided, uses "Copy of [original name]".
+        parent_folder_id (Optional[str]): The ID of the folder where the copy should be created.
+            If not provided, the copy is created in the same folder as the original.
+        description (Optional[str]): Description for the copied file.
 
     Returns:
         str: Confirmation message with details of the copied file and its link.
     """
     logger.info(
-        f"[copy_drive_file] Invoked. Email: '{user_google_email}', File ID: '{file_id}', New name: '{new_name}', Parent folder: '{parent_folder_id}'"
+        f"[copy_drive_file] Invoked. Email: '{user_google_email}', File ID: '{file_id}', Name: '{name}', Parent folder: '{parent_folder_id}'"
     )
 
     resolved_file_id, file_metadata = await resolve_drive_item(
@@ -2175,16 +2178,18 @@ async def copy_drive_file(
     file_id = resolved_file_id
     original_name = file_metadata.get("name", "Unknown File")
 
-    resolved_folder_id = await resolve_folder_id(service, parent_folder_id)
-
-    copy_body = {}
-    if new_name:
-        copy_body["name"] = new_name
+    copy_body: Dict[str, Any] = {}
+    if name:
+        copy_body["name"] = name
     else:
         copy_body["name"] = f"Copy of {original_name}"
 
-    if resolved_folder_id != "root":
+    if parent_folder_id:
+        resolved_folder_id = await resolve_folder_id(service, parent_folder_id)
         copy_body["parents"] = [resolved_folder_id]
+
+    if description:
+        copy_body["description"] = description
 
     copied_file = await asyncio.to_thread(
         service.files()
@@ -2192,7 +2197,7 @@ async def copy_drive_file(
             fileId=file_id,
             body=copy_body,
             supportsAllDrives=True,
-            fields="id, name, webViewLink, mimeType, parents",
+            fields="id, name, webViewLink, mimeType, parents, description",
         )
         .execute
     )
@@ -2204,10 +2209,12 @@ async def copy_drive_file(
         f"New file ID: {copied_file.get('id', 'N/A')}",
         f"New file name: {copied_file.get('name', 'Unknown')}",
         f"File type: {copied_file.get('mimeType', 'Unknown')}",
-        f"Location: {parent_folder_id}",
-        "",
-        f"View copied file: {copied_file.get('webViewLink', 'N/A')}",
     ]
+    if description:
+        output_parts.append(f"Description: {description}")
+    if parent_folder_id:
+        output_parts.append(f"Location: {parent_folder_id}")
+    output_parts.extend(["", f"View copied file: {copied_file.get('webViewLink', 'N/A')}"])
 
     return "\n".join(output_parts)
 
@@ -2379,5 +2386,332 @@ async def set_drive_file_permissions(
     else:
         output_parts.append("  - No changes (already configured)")
     output_parts.extend(["", f"View link: {file_metadata.get('webViewLink', 'N/A')}"])
+
+    return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors(
+    "create_drive_permission", is_read_only=False, service_type="drive"
+)
+@require_google_service("drive", "drive_file")
+async def create_drive_permission(
+    service,
+    user_google_email: str,
+    file_id: str,
+    role: str,
+    type: str,
+    email_address: Optional[str] = None,
+    domain: Optional[str] = None,
+    send_notification_email: bool = True,
+    email_message: Optional[str] = None,
+    allow_file_discovery: bool = False,
+) -> str:
+    """
+    Creates a new permission for a Google Drive file or folder (sharing settings).
+
+    This tool adds a new permission to share the file with a user, group, domain, or anyone.
+    Use this for granting access to files and folders.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the file or folder to share. Required.
+        role (str): The permission role. Required. One of:
+            - "owner": Full ownership (only for user type, transfers ownership)
+            - "organizer": Can manage shared drive members (shared drives only)
+            - "fileOrganizer": Can add/remove items in shared drive (shared drives only)
+            - "writer": Can edit
+            - "commenter": Can comment
+            - "reader": Can view
+        type (str): The type of grantee. Required. One of:
+            - "user": A specific user (requires email_address)
+            - "group": A Google Group (requires email_address)
+            - "domain": An entire domain (requires domain)
+            - "anyone": Anyone with the link (no email_address or domain needed)
+        email_address (Optional[str]): Email address for 'user' or 'group' type.
+        domain (Optional[str]): Domain name for 'domain' type (e.g., "example.com").
+        send_notification_email (bool): Whether to send a notification email when sharing
+            with users or groups. Defaults to True.
+        email_message (Optional[str]): Custom message to include in the notification email.
+        allow_file_discovery (bool): Whether the file can be discovered through search
+            for 'domain' or 'anyone' type. Defaults to False.
+
+    Returns:
+        str: Confirmation message with details of the created permission.
+    """
+    logger.info(
+        f"[create_drive_permission] Invoked. Email: '{user_google_email}', "
+        f"File ID: '{file_id}', Role: '{role}', Type: '{type}'"
+    )
+
+    # Validate role
+    valid_roles = {"owner", "organizer", "fileOrganizer", "writer", "commenter", "reader"}
+    if role not in valid_roles:
+        raise ValueError(
+            f"Invalid role '{role}'. Must be one of: {', '.join(sorted(valid_roles))}"
+        )
+
+    # Validate type
+    valid_types = {"user", "group", "domain", "anyone"}
+    if type not in valid_types:
+        raise ValueError(
+            f"Invalid type '{type}'. Must be one of: {', '.join(sorted(valid_types))}"
+        )
+
+    # Validate required parameters based on type
+    if type in ("user", "group") and not email_address:
+        raise ValueError(f"email_address is required for type '{type}'")
+    if type == "domain" and not domain:
+        raise ValueError("domain is required for type 'domain'")
+
+    resolved_file_id, file_metadata = await resolve_drive_item(
+        service, file_id, extra_fields="name, webViewLink"
+    )
+    file_id = resolved_file_id
+    file_name = file_metadata.get("name", "Unknown")
+
+    # Build permission body
+    permission_body: Dict[str, Any] = {
+        "type": type,
+        "role": role,
+    }
+    if type in ("user", "group"):
+        permission_body["emailAddress"] = email_address
+    elif type == "domain":
+        permission_body["domain"] = domain
+
+    if type in ("domain", "anyone"):
+        permission_body["allowFileDiscovery"] = allow_file_discovery
+
+    # Build API call parameters
+    create_params: Dict[str, Any] = {
+        "fileId": file_id,
+        "body": permission_body,
+        "supportsAllDrives": True,
+        "fields": "id, type, role, emailAddress, domain, expirationTime, allowFileDiscovery",
+    }
+
+    if type in ("user", "group"):
+        create_params["sendNotificationEmail"] = send_notification_email
+        if email_message:
+            create_params["emailMessage"] = email_message
+
+    # Transfer ownership requires special parameter
+    if role == "owner":
+        create_params["transferOwnership"] = True
+
+    created_permission = await asyncio.to_thread(
+        service.permissions().create(**create_params).execute
+    )
+
+    # Build output
+    target = email_address or domain or "anyone"
+    output_parts = [
+        f"Successfully created permission for '{file_name}'",
+        "",
+        f"Permission ID: {created_permission.get('id', 'N/A')}",
+        f"Type: {created_permission.get('type', 'N/A')}",
+        f"Role: {created_permission.get('role', 'N/A')}",
+        f"Granted to: {target}",
+    ]
+    if created_permission.get("allowFileDiscovery") is not None:
+        output_parts.append(
+            f"File discovery: {'enabled' if created_permission.get('allowFileDiscovery') else 'disabled'}"
+        )
+    if send_notification_email and type in ("user", "group"):
+        output_parts.append("Notification email: sent")
+    output_parts.extend(["", f"View file: {file_metadata.get('webViewLink', 'N/A')}"])
+
+    return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors(
+    "delete_drive_permission", is_read_only=False, service_type="drive"
+)
+@require_google_service("drive", "drive_file")
+async def delete_drive_permission(
+    service,
+    user_google_email: str,
+    file_id: str,
+    permission_id: str,
+) -> str:
+    """
+    Deletes a permission from a Google Drive file or folder.
+
+    This tool removes an existing permission, revoking access for the specified user,
+    group, domain, or anyone link. Use get_drive_file_permissions to find permission IDs.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the file or folder. Required.
+        permission_id (str): The ID of the permission to delete. Required.
+            Use get_drive_file_permissions to list permissions and their IDs.
+
+    Returns:
+        str: Confirmation message indicating the permission was deleted.
+    """
+    logger.info(
+        f"[delete_drive_permission] Invoked. Email: '{user_google_email}', "
+        f"File ID: '{file_id}', Permission ID: '{permission_id}'"
+    )
+
+    resolved_file_id, file_metadata = await resolve_drive_item(
+        service, file_id, extra_fields="name, webViewLink"
+    )
+    file_id = resolved_file_id
+    file_name = file_metadata.get("name", "Unknown")
+
+    # Get permission details before deletion for better output
+    try:
+        permission_details = await asyncio.to_thread(
+            service.permissions()
+            .get(
+                fileId=file_id,
+                permissionId=permission_id,
+                supportsAllDrives=True,
+                fields="id, type, role, emailAddress, domain",
+            )
+            .execute
+        )
+    except HttpError:
+        # If we can't get details, proceed with deletion anyway
+        permission_details = {"id": permission_id}
+
+    # Delete the permission
+    await asyncio.to_thread(
+        service.permissions()
+        .delete(
+            fileId=file_id,
+            permissionId=permission_id,
+            supportsAllDrives=True,
+        )
+        .execute
+    )
+
+    # Build output
+    perm_type = permission_details.get("type", "Unknown")
+    perm_role = permission_details.get("role", "Unknown")
+    target = (
+        permission_details.get("emailAddress")
+        or permission_details.get("domain")
+        or ("anyone" if perm_type == "anyone" else "Unknown")
+    )
+
+    output_parts = [
+        f"Successfully deleted permission from '{file_name}'",
+        "",
+        f"Deleted permission ID: {permission_id}",
+        f"Type: {perm_type}",
+        f"Role was: {perm_role}",
+        f"Revoked access for: {target}",
+        "",
+        f"View file: {file_metadata.get('webViewLink', 'N/A')}",
+    ]
+
+    return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors(
+    "update_drive_permission", is_read_only=False, service_type="drive"
+)
+@require_google_service("drive", "drive_file")
+async def update_drive_permission(
+    service,
+    user_google_email: str,
+    file_id: str,
+    permission_id: str,
+    role: str,
+) -> str:
+    """
+    Updates an existing permission for a Google Drive file or folder.
+
+    This tool modifies the role of an existing permission. Use this to change
+    someone's access level (e.g., from reader to writer) without removing
+    and re-adding the permission.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_id (str): The ID of the file or folder. Required.
+        permission_id (str): The ID of the permission to update. Required.
+            Use get_drive_file_permissions to list permissions and their IDs.
+        role (str): The new permission role. Required. One of:
+            - "owner": Full ownership (transfers ownership, user type only)
+            - "organizer": Can manage shared drive members (shared drives only)
+            - "fileOrganizer": Can add/remove items in shared drive (shared drives only)
+            - "writer": Can edit
+            - "commenter": Can comment
+            - "reader": Can view
+
+    Returns:
+        str: Confirmation message with details of the updated permission.
+    """
+    logger.info(
+        f"[update_drive_permission] Invoked. Email: '{user_google_email}', "
+        f"File ID: '{file_id}', Permission ID: '{permission_id}', New role: '{role}'"
+    )
+
+    # Validate role
+    valid_roles = {"owner", "organizer", "fileOrganizer", "writer", "commenter", "reader"}
+    if role not in valid_roles:
+        raise ValueError(
+            f"Invalid role '{role}'. Must be one of: {', '.join(sorted(valid_roles))}"
+        )
+
+    resolved_file_id, file_metadata = await resolve_drive_item(
+        service, file_id, extra_fields="name, webViewLink"
+    )
+    file_id = resolved_file_id
+    file_name = file_metadata.get("name", "Unknown")
+
+    # Get current permission details for output
+    current_permission = await asyncio.to_thread(
+        service.permissions()
+        .get(
+            fileId=file_id,
+            permissionId=permission_id,
+            supportsAllDrives=True,
+            fields="id, type, role, emailAddress, domain",
+        )
+        .execute
+    )
+    old_role = current_permission.get("role", "Unknown")
+
+    # Build update parameters
+    update_params: Dict[str, Any] = {
+        "fileId": file_id,
+        "permissionId": permission_id,
+        "body": {"role": role},
+        "supportsAllDrives": True,
+        "fields": "id, type, role, emailAddress, domain",
+    }
+
+    # Transfer ownership requires special parameter
+    if role == "owner":
+        update_params["transferOwnership"] = True
+
+    updated_permission = await asyncio.to_thread(
+        service.permissions().update(**update_params).execute
+    )
+
+    # Build output
+    perm_type = updated_permission.get("type", "Unknown")
+    target = (
+        updated_permission.get("emailAddress")
+        or updated_permission.get("domain")
+        or ("anyone" if perm_type == "anyone" else "Unknown")
+    )
+
+    output_parts = [
+        f"Successfully updated permission for '{file_name}'",
+        "",
+        f"Permission ID: {permission_id}",
+        f"Type: {perm_type}",
+        f"Target: {target}",
+        f"Role changed: {old_role} -> {updated_permission.get('role', 'N/A')}",
+        "",
+        f"View file: {file_metadata.get('webViewLink', 'N/A')}",
+    ]
 
     return "\n".join(output_parts)
