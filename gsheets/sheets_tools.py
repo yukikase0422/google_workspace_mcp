@@ -1423,6 +1423,369 @@ async def append_table_rows(
     return text_output
 
 
+@server.tool()
+@handle_http_errors("append_sheet_values", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def append_sheet_values(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    range: str,
+    values: Union[str, List[List]],
+    value_input_option: str = "USER_ENTERED",
+    insert_data_option: str = "INSERT_ROWS",
+) -> str:
+    """
+    Appends values after the last row of data in the specified range.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        range (str): The A1 notation range to search for data (e.g., "Sheet1!A:C").
+            Values are appended after the last row with data in this range. Required.
+        values (Union[str, List[List]]): 2D array of values to append. Can be a
+            JSON string or Python list. Required.
+        value_input_option (str): How to interpret input values. "RAW" treats input
+            as literal values, "USER_ENTERED" parses as if typed in UI (formulas,
+            dates, etc.). Defaults to "USER_ENTERED".
+        insert_data_option (str): How data is inserted. "OVERWRITE" overwrites existing
+            cells, "INSERT_ROWS" inserts new rows for new data. Defaults to "INSERT_ROWS".
+
+    Returns:
+        str: Confirmation message with details of the append operation.
+    """
+    logger.info(
+        f"[append_sheet_values] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}, Range: {range}"
+    )
+
+    # Parse values if JSON string
+    if isinstance(values, str):
+        try:
+            values = json.loads(values)
+        except json.JSONDecodeError as e:
+            raise UserInputError(f"Invalid JSON in values parameter: {e}")
+
+    if not values or not isinstance(values, list):
+        raise UserInputError("values must be a non-empty 2D list of cell values.")
+
+    for i, row in enumerate(values):
+        if not isinstance(row, list):
+            raise UserInputError(
+                f"Row {i} must be a list, got {type(row).__name__}"
+            )
+
+    body = {"values": values}
+
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .append(
+            spreadsheetId=spreadsheet_id,
+            range=range,
+            valueInputOption=value_input_option,
+            insertDataOption=insert_data_option,
+            body=body,
+        )
+        .execute
+    )
+
+    updates = result.get("updates", {})
+    updated_range = updates.get("updatedRange", range)
+    updated_rows = updates.get("updatedRows", 0)
+    updated_cells = updates.get("updatedCells", 0)
+
+    text_output = (
+        f"Successfully appended {updated_rows} row(s) ({updated_cells} cells) "
+        f"to range '{updated_range}' in spreadsheet {spreadsheet_id} "
+        f"for {user_google_email}."
+    )
+
+    logger.info(
+        f"[append_sheet_values] Appended {updated_rows} rows for {user_google_email}"
+    )
+    return text_output
+
+
+@server.tool()
+@handle_http_errors("batch_read_sheet_values", is_read_only=True, service_type="sheets")
+@require_google_service("sheets", "sheets_read")
+async def batch_read_sheet_values(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    ranges: Union[str, List[str]],
+    major_dimension: str = "ROWS",
+    value_render_option: str = "FORMATTED_VALUE",
+) -> str:
+    """
+    Reads values from multiple ranges in a single request.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        ranges (Union[str, List[str]]): List of A1 notation ranges to read
+            (e.g., ["Sheet1!A1:B10", "Sheet2!C1:D5"]). Can be a JSON string
+            or Python list. Required.
+        major_dimension (str): Whether values are organized by ROWS or COLUMNS.
+            Defaults to "ROWS".
+        value_render_option (str): How values should be rendered. "FORMATTED_VALUE"
+            returns display values, "UNFORMATTED_VALUE" returns raw values,
+            "FORMULA" returns formulas. Defaults to "FORMATTED_VALUE".
+
+    Returns:
+        str: Formatted values from all specified ranges.
+    """
+    logger.info(
+        f"[batch_read_sheet_values] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}, Ranges: {ranges}"
+    )
+
+    # Parse ranges if JSON string
+    if isinstance(ranges, str):
+        try:
+            ranges = json.loads(ranges)
+        except json.JSONDecodeError as e:
+            raise UserInputError(f"Invalid JSON in ranges parameter: {e}")
+
+    if not ranges or not isinstance(ranges, list):
+        raise UserInputError("ranges must be a non-empty list of A1 notation ranges.")
+
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .batchGet(
+            spreadsheetId=spreadsheet_id,
+            ranges=ranges,
+            majorDimension=major_dimension,
+            valueRenderOption=value_render_option,
+        )
+        .execute
+    )
+
+    value_ranges = result.get("valueRanges", [])
+
+    output_parts = [
+        f"Successfully read {len(value_ranges)} range(s) from spreadsheet "
+        f"{spreadsheet_id} for {user_google_email}:"
+    ]
+
+    for vr in value_ranges:
+        range_name = vr.get("range", "Unknown")
+        values = vr.get("values", [])
+
+        output_parts.append(f"\n--- Range: {range_name} ({len(values)} rows) ---")
+
+        if not values:
+            output_parts.append("  (No data)")
+        else:
+            for i, row in enumerate(values[:50], 1):
+                output_parts.append(f"  Row {i:2d}: {row}")
+            if len(values) > 50:
+                output_parts.append(f"  ... and {len(values) - 50} more rows")
+
+    logger.info(
+        f"[batch_read_sheet_values] Read {len(value_ranges)} ranges for {user_google_email}"
+    )
+    return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors("batch_modify_sheet_values", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def batch_modify_sheet_values(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    data: Union[str, List[dict]],
+    value_input_option: str = "USER_ENTERED",
+) -> str:
+    """
+    Updates values in multiple ranges in a single request.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        data (Union[str, List[dict]]): List of range-value pairs to update.
+            Each item must have "range" (A1 notation) and "values" (2D array).
+            Example: [{"range": "Sheet1!A1:B2", "values": [[1,2],[3,4]]}].
+            Can be a JSON string or Python list. Required.
+        value_input_option (str): How to interpret input values. "RAW" treats input
+            as literal values, "USER_ENTERED" parses as if typed in UI (formulas,
+            dates, etc.). Defaults to "USER_ENTERED".
+
+    Returns:
+        str: Confirmation message with details of the batch update operation.
+    """
+    logger.info(
+        f"[batch_modify_sheet_values] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}"
+    )
+
+    # Parse data if JSON string
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as e:
+            raise UserInputError(f"Invalid JSON in data parameter: {e}")
+
+    if not data or not isinstance(data, list):
+        raise UserInputError("data must be a non-empty list of range-value pairs.")
+
+    # Validate data structure
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise UserInputError(f"data[{i}] must be a dict, got {type(item).__name__}")
+        if "range" not in item:
+            raise UserInputError(f"data[{i}] is missing required 'range' field")
+        if "values" not in item:
+            raise UserInputError(f"data[{i}] is missing required 'values' field")
+        if not isinstance(item["values"], list):
+            raise UserInputError(
+                f"data[{i}]['values'] must be a list, got {type(item['values']).__name__}"
+            )
+
+    body = {
+        "valueInputOption": value_input_option,
+        "data": data,
+    }
+
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .values()
+        .batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=body,
+        )
+        .execute
+    )
+
+    total_updated_cells = result.get("totalUpdatedCells", 0)
+    total_updated_rows = result.get("totalUpdatedRows", 0)
+    total_updated_columns = result.get("totalUpdatedColumns", 0)
+    total_updated_sheets = result.get("totalUpdatedSheets", 0)
+    responses = result.get("responses", [])
+
+    output_parts = [
+        f"Successfully updated {len(responses)} range(s) in spreadsheet "
+        f"{spreadsheet_id} for {user_google_email}. "
+        f"Total: {total_updated_cells} cells, {total_updated_rows} rows, "
+        f"{total_updated_columns} columns across {total_updated_sheets} sheet(s)."
+    ]
+
+    for resp in responses:
+        updated_range = resp.get("updatedRange", "Unknown")
+        updated_cells = resp.get("updatedCells", 0)
+        output_parts.append(f"  - {updated_range}: {updated_cells} cells updated")
+
+    logger.info(
+        f"[batch_modify_sheet_values] Updated {total_updated_cells} cells for {user_google_email}"
+    )
+    return "\n".join(output_parts)
+
+
+@server.tool()
+@handle_http_errors("batch_update_spreadsheet", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def batch_update_spreadsheet(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    requests: Union[str, List[dict]],
+) -> str:
+    """
+    Executes arbitrary batchUpdate requests on a spreadsheet. This is a powerful
+    tool that can perform various operations like formatting, sorting, filtering,
+    merging cells, adding/deleting rows/columns, and more.
+
+    Common request types include:
+    - updateCells: Update cell properties (values, formats)
+    - repeatCell: Apply formatting to a range
+    - mergeCells: Merge cells together
+    - unmergeCells: Unmerge previously merged cells
+    - insertDimension: Insert rows or columns
+    - deleteDimension: Delete rows or columns
+    - moveDimension: Move rows or columns
+    - sortRange: Sort data in a range
+    - setBasicFilter: Add filter views
+    - autoResizeDimensions: Auto-resize rows/columns
+    - addConditionalFormatRule: Add conditional formatting
+    - updateBorders: Add or modify borders
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        requests (Union[str, List[dict]]): List of batchUpdate request objects.
+            Each request should contain exactly one request type.
+            Example: [{"mergeCells": {"range": {...}, "mergeType": "MERGE_ALL"}}].
+            Can be a JSON string or Python list. Required.
+
+    Returns:
+        str: Confirmation message with details of the batch update operation.
+    """
+    logger.info(
+        f"[batch_update_spreadsheet] Invoked. Email: '{user_google_email}', "
+        f"Spreadsheet: {spreadsheet_id}"
+    )
+
+    # Parse requests if JSON string
+    if isinstance(requests, str):
+        try:
+            requests = json.loads(requests)
+        except json.JSONDecodeError as e:
+            raise UserInputError(f"Invalid JSON in requests parameter: {e}")
+
+    if not requests or not isinstance(requests, list):
+        raise UserInputError("requests must be a non-empty list of request objects.")
+
+    # Validate requests structure
+    for i, req in enumerate(requests):
+        if not isinstance(req, dict):
+            raise UserInputError(
+                f"requests[{i}] must be a dict, got {type(req).__name__}"
+            )
+        if not req:
+            raise UserInputError(f"requests[{i}] is empty")
+
+    body = {"requests": requests}
+
+    result = await asyncio.to_thread(
+        service.spreadsheets()
+        .batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body=body,
+        )
+        .execute
+    )
+
+    replies = result.get("replies", [])
+    spreadsheet_id_result = result.get("spreadsheetId", spreadsheet_id)
+
+    # Summarize the request types
+    request_types = []
+    for req in requests:
+        request_types.extend(req.keys())
+
+    output_parts = [
+        f"Successfully executed {len(requests)} request(s) on spreadsheet "
+        f"{spreadsheet_id_result} for {user_google_email}.",
+        f"Request types: {', '.join(request_types)}",
+    ]
+
+    # Add relevant reply information if available
+    if replies:
+        for i, reply in enumerate(replies):
+            if reply:  # Non-empty reply
+                reply_keys = list(reply.keys())
+                if reply_keys:
+                    output_parts.append(f"  Reply {i+1}: {reply_keys}")
+
+    logger.info(
+        f"[batch_update_spreadsheet] Executed {len(requests)} requests for {user_google_email}"
+    )
+    return "\n".join(output_parts)
+
+
 # Create comment management tools for sheets
 _comment_tools = create_comment_tools("spreadsheet", "spreadsheet_id")
 
