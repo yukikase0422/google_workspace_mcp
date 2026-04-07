@@ -1,0 +1,8 @@
+# Ensure shell scripts use LF line endings (required for Linux containers)
+*.sh text eol=lf
+
+# Ensure Dockerfile uses LF line endings
+Dockerfile* text eol=lf
+
+# Python files should use LF
+*.py text eol=lf
