@@ -669,6 +669,8 @@ async def _create_event_impl(
     guests_can_modify: Optional[bool] = None,
     guests_can_invite_others: Optional[bool] = None,
     guests_can_see_other_guests: Optional[bool] = None,
+    color_id: Optional[str] = None,
+    send_updates: Optional[str] = None,
 ) -> str:
     """Internal implementation for creating a calendar event."""
     logger.info(
@@ -739,6 +741,11 @@ async def _create_event_impl(
 
     # Handle visibility validation
     _apply_visibility_if_valid(event_body, visibility, "create_event")
+
+    # Handle color_id
+    if color_id is not None:
+        event_body["colorId"] = color_id
+        logger.info(f"[create_event] Set colorId to {color_id}")
 
     # Handle guest permissions
     if guests_can_modify is not None:
@@ -837,29 +844,27 @@ async def _create_event_impl(
         finally:
             if drive_service:
                 drive_service.close()
+        insert_params: Dict[str, Any] = {
+            "calendarId": calendar_id,
+            "body": event_body,
+            "supportsAttachments": True,
+            "conferenceDataVersion": 1 if add_google_meet else 0,
+        }
+        if send_updates is not None:
+            insert_params["sendUpdates"] = send_updates
         created_event = await asyncio.to_thread(
-            lambda: (
-                service.events()
-                .insert(
-                    calendarId=calendar_id,
-                    body=event_body,
-                    supportsAttachments=True,
-                    conferenceDataVersion=1 if add_google_meet else 0,
-                )
-                .execute()
-            )
+            lambda: service.events().insert(**insert_params).execute()
         )
     else:
+        insert_params: Dict[str, Any] = {
+            "calendarId": calendar_id,
+            "body": event_body,
+            "conferenceDataVersion": 1 if add_google_meet else 0,
+        }
+        if send_updates is not None:
+            insert_params["sendUpdates"] = send_updates
         created_event = await asyncio.to_thread(
-            lambda: (
-                service.events()
-                .insert(
-                    calendarId=calendar_id,
-                    body=event_body,
-                    conferenceDataVersion=1 if add_google_meet else 0,
-                )
-                .execute()
-            )
+            lambda: service.events().insert(**insert_params).execute()
         )
     link = created_event.get("htmlLink", "No link available")
     confirmation_message = f"Successfully created event '{created_event.get('summary', summary)}' for {user_google_email}. Link: {link}"
@@ -932,6 +937,7 @@ async def _modify_event_impl(
     guests_can_modify: Optional[bool] = None,
     guests_can_invite_others: Optional[bool] = None,
     guests_can_see_other_guests: Optional[bool] = None,
+    send_updates: Optional[str] = None,
 ) -> str:
     """Internal implementation for modifying a calendar event."""
     logger.info(
@@ -1124,17 +1130,16 @@ async def _modify_event_impl(
             )
 
     # Proceed with the update
+    update_params: Dict[str, Any] = {
+        "calendarId": calendar_id,
+        "eventId": event_id,
+        "body": event_body,
+        "conferenceDataVersion": 1,
+    }
+    if send_updates is not None:
+        update_params["sendUpdates"] = send_updates
     updated_event = await asyncio.to_thread(
-        lambda: (
-            service.events()
-            .update(
-                calendarId=calendar_id,
-                eventId=event_id,
-                body=event_body,
-                conferenceDataVersion=1,
-            )
-            .execute()
-        )
+        lambda: service.events().update(**update_params).execute()
     )
 
     link = updated_event.get("htmlLink", "No link available")
@@ -1164,6 +1169,7 @@ async def _delete_event_impl(
     user_google_email: str,
     event_id: str,
     calendar_id: str = "primary",
+    send_updates: Optional[str] = None,
 ) -> str:
     """Internal implementation for deleting a calendar event."""
     logger.info(
@@ -1196,10 +1202,14 @@ async def _delete_event_impl(
             )
 
     # Proceed with the deletion
+    delete_params: Dict[str, Any] = {
+        "calendarId": calendar_id,
+        "eventId": event_id,
+    }
+    if send_updates is not None:
+        delete_params["sendUpdates"] = send_updates
     await asyncio.to_thread(
-        lambda: (
-            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-        )
+        lambda: service.events().delete(**delete_params).execute()
     )
 
     confirmation_message = f"Successfully deleted event (ID: {event_id}) from calendar '{calendar_id}' for {user_google_email}."
@@ -1330,14 +1340,14 @@ async def manage_event(
         use_default_reminders (Optional[bool]): Whether to use default reminders.
         transparency (Optional[str]): "opaque" (busy) or "transparent" (free).
         visibility (Optional[str]): "default", "public", "private", or "confidential".
-        color_id (Optional[str]): Event color ID (1-11, update only).
+        color_id (Optional[str]): Event color ID ("1"-"11").
         recurrence (Optional[List[str]]): RFC5545 recurrence rules for a recurring event, e.g. ["RRULE:FREQ=WEEKLY;COUNT=10"].
         guests_can_modify (Optional[bool]): Whether attendees can modify.
         guests_can_invite_others (Optional[bool]): Whether attendees can invite others.
         guests_can_see_other_guests (Optional[bool]): Whether attendees can see other guests.
         response (Optional[str]): RSVP response — "accepted", "declined", "tentative", or "needsAction" (rsvp action only).
         rsvp_comment (Optional[str]): Optional message to include with the RSVP response (rsvp action only).
-        send_updates (Optional[str]): Notification behavior for RSVP — "all" (default), "externalOnly", or "none" (rsvp action only).
+        send_updates (Optional[str]): Notification behavior — "all", "externalOnly", or "none". Controls whether attendees receive notifications about the event change.
 
     Returns:
         str: Confirmation message with event details.
@@ -1371,6 +1381,8 @@ async def manage_event(
             guests_can_invite_others=guests_can_invite_others,
             guests_can_see_other_guests=guests_can_see_other_guests,
             recurrence=recurrence,
+            color_id=color_id,
+            send_updates=send_updates,
         )
     elif action_lower == "update":
         if not event_id:
@@ -1397,6 +1409,7 @@ async def manage_event(
             guests_can_modify=guests_can_modify,
             guests_can_invite_others=guests_can_invite_others,
             guests_can_see_other_guests=guests_can_see_other_guests,
+            send_updates=send_updates,
         )
     elif action_lower == "delete":
         if not event_id:
@@ -1406,6 +1419,7 @@ async def manage_event(
             user_google_email=user_google_email,
             event_id=event_id,
             calendar_id=calendar_id,
+            send_updates=send_updates,
         )
     elif action_lower == "rsvp":
         if not event_id:
@@ -2464,3 +2478,185 @@ async def create_calendar(
         f"[create_calendar] Created calendar '{calendar_summary}' with ID: {calendar_id}"
     )
     return f"Created calendar '{calendar_summary}' (ID: {calendar_id})"
+
+
+@server.tool()
+@handle_http_errors(
+    "get_recurring_event_instances", is_read_only=True, service_type="calendar"
+)
+@require_google_service("calendar", "calendar_read")
+async def get_recurring_event_instances(
+    service,
+    user_google_email: str,
+    event_id: str,
+    calendar_id: str = "primary",
+    time_min: Optional[str] = None,
+    time_max: Optional[str] = None,
+    max_results: int = 25,
+    timezone: Optional[str] = None,
+) -> str:
+    """
+    Retrieves individual instances of a recurring event.
+
+    Use this tool to get specific occurrences of a recurring event within a time range.
+    The event_id should be the ID of the recurring event (the parent event), not an
+    individual instance.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        event_id (str): The ID of the recurring event to get instances for.
+        calendar_id (str): Calendar ID (default: 'primary').
+        time_min (Optional[str]): Lower bound (inclusive) for instance start time in RFC3339 format.
+            If not specified, defaults to current time.
+        time_max (Optional[str]): Upper bound (exclusive) for instance start time in RFC3339 format.
+        max_results (int): Maximum number of instances to return (default: 25, max: 2500).
+        timezone (Optional[str]): IANA timezone (e.g., "America/New_York") for interpreting date-only time_min/time_max.
+
+    Returns:
+        str: Formatted list of recurring event instances with their details.
+    """
+    logger.info(
+        f"[get_recurring_event_instances] Invoked. Email: '{user_google_email}', Event ID: {event_id}"
+    )
+
+    # Prepare time bounds
+    effective_time_min = _correct_time_format_for_api(time_min, "time_min", timezone)
+    if not effective_time_min:
+        # Default to current time if not specified
+        if timezone:
+            try:
+                tz = pytz.timezone(timezone)
+                now = datetime.datetime.now(tz)
+                effective_time_min = (
+                    now.astimezone(datetime.timezone.utc)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+            except pytz.exceptions.UnknownTimeZoneError:
+                logger.warning(
+                    f"[get_recurring_event_instances] Could not apply timezone '{timezone}', falling back to UTC"
+                )
+                utc_now = datetime.datetime.now(datetime.timezone.utc)
+                effective_time_min = utc_now.isoformat().replace("+00:00", "Z")
+        else:
+            utc_now = datetime.datetime.now(datetime.timezone.utc)
+            effective_time_min = utc_now.isoformat().replace("+00:00", "Z")
+
+    effective_time_max = _correct_time_format_for_api(time_max, "time_max", timezone)
+
+    # Build request parameters
+    request_params: Dict[str, Any] = {
+        "calendarId": calendar_id,
+        "eventId": event_id,
+        "maxResults": min(max_results, 2500),
+    }
+    if effective_time_min:
+        request_params["timeMin"] = effective_time_min
+    if effective_time_max:
+        request_params["timeMax"] = effective_time_max
+
+    logger.info(
+        f"[get_recurring_event_instances] Request params: {request_params}"
+    )
+
+    # Call the instances API
+    instances_result = await asyncio.to_thread(
+        lambda: service.events().instances(**request_params).execute()
+    )
+
+    items = instances_result.get("items", [])
+    if not items:
+        return f"No instances found for recurring event '{event_id}' in the specified time range."
+
+    # Format the output
+    lines = [
+        f"Found {len(items)} instance(s) for recurring event '{event_id}':\n"
+    ]
+
+    for i, item in enumerate(items, 1):
+        summary = item.get("summary", "No title")
+        start = item.get("start", {}).get(
+            "date", item.get("start", {}).get("dateTime", "N/A")
+        )
+        end = item.get("end", {}).get(
+            "date", item.get("end", {}).get("dateTime", "N/A")
+        )
+        instance_id = item.get("id", "N/A")
+        status = item.get("status", "confirmed")
+
+        lines.append(f'{i}. "{summary}"')
+        lines.append(f"   Start: {start}")
+        lines.append(f"   End: {end}")
+        lines.append(f"   Instance ID: {instance_id}")
+        if status != "confirmed":
+            lines.append(f"   Status: {status}")
+        lines.append("")
+
+    logger.info(
+        f"[get_recurring_event_instances] Successfully retrieved {len(items)} instances for event '{event_id}'"
+    )
+    return "\n".join(lines).rstrip()
+
+
+@server.tool()
+@handle_http_errors("move_event", is_read_only=False, service_type="calendar")
+@require_google_service("calendar", "calendar_events")
+async def move_event(
+    service,
+    user_google_email: str,
+    event_id: str,
+    destination_calendar_id: str,
+    source_calendar_id: str = "primary",
+    send_updates: Optional[str] = None,
+) -> str:
+    """
+    Moves an event from one calendar to another.
+
+    This operation changes which calendar an event belongs to. The event ID will
+    remain the same, but it will no longer appear in the source calendar.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        event_id (str): The ID of the event to move.
+        destination_calendar_id (str): The ID of the calendar to move the event to.
+        source_calendar_id (str): The ID of the calendar the event is currently in (default: 'primary').
+        send_updates (Optional[str]): Notification behavior — "all", "externalOnly", or "none".
+            Controls whether attendees receive notifications about the move.
+
+    Returns:
+        str: Confirmation message with the moved event details.
+    """
+    logger.info(
+        f"[move_event] Invoked. Email: '{user_google_email}', Event ID: {event_id}, "
+        f"Source: {source_calendar_id}, Destination: {destination_calendar_id}"
+    )
+
+    # Build move parameters
+    move_params: Dict[str, Any] = {
+        "calendarId": source_calendar_id,
+        "eventId": event_id,
+        "destination": destination_calendar_id,
+    }
+    if send_updates is not None:
+        move_params["sendUpdates"] = send_updates
+
+    # Execute the move
+    moved_event = await asyncio.to_thread(
+        lambda: service.events().move(**move_params).execute()
+    )
+
+    summary = moved_event.get("summary", "No title")
+    new_event_id = moved_event.get("id", event_id)
+    link = moved_event.get("htmlLink", "No link available")
+
+    confirmation_message = (
+        f"Successfully moved event '{summary}' (ID: {new_event_id}) "
+        f"from calendar '{source_calendar_id}' to calendar '{destination_calendar_id}'. "
+        f"Link: {link}"
+    )
+
+    logger.info(
+        f"[move_event] Event moved successfully for {user_google_email}. "
+        f"Event: '{summary}', New calendar: {destination_calendar_id}"
+    )
+    return confirmation_message
