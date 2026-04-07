@@ -16,6 +16,7 @@ from auth.oauth21_session_store import (
 )
 from auth.oauth_config import is_oauth21_enabled, get_oauth_config
 from core.context import set_fastmcp_session_id
+from core.config import USER_GOOGLE_EMAIL
 from auth.scopes import (
     GMAIL_READONLY_SCOPE,
     GMAIL_SEND_SCOPE,
@@ -329,9 +330,19 @@ def _extract_oauth20_user_email(
     bound_args.apply_defaults()
 
     user_google_email = bound_args.arguments.get("user_google_email")
+
+    # In OAuth 2.0 mode allow falling back to USER_GOOGLE_EMAIL so callers
+    # don't need to supply the email on every invocation.
+    if not user_google_email and USER_GOOGLE_EMAIL:
+        user_google_email = USER_GOOGLE_EMAIL
+        logger.info(
+            f"[require_google_service] Using default USER_GOOGLE_EMAIL for OAuth 2.0: {user_google_email}"
+        )
+
     if not user_google_email:
         raise Exception(
-            "'user_google_email' parameter is required but was not found."
+            "'user_google_email' parameter is required but was not found. "
+            "Set USER_GOOGLE_EMAIL to use a default in OAuth 2.0 mode."
         )
     return user_google_email
 
