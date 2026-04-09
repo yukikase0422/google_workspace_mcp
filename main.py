@@ -283,6 +283,7 @@ def main():
         "WORKSPACE_MCP_STATELESS_MODE": os.getenv(
             "WORKSPACE_MCP_STATELESS_MODE", "false"
         ),
+        "WORKSPACE_MCP_GWS_ONLY": os.getenv("WORKSPACE_MCP_GWS_ONLY", "false"),
         "OAUTHLIB_INSECURE_TRANSPORT": os.getenv(
             "OAUTHLIB_INSECURE_TRANSPORT", "false"
         ),

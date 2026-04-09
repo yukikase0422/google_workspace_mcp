@@ -6,6 +6,7 @@ based on tier configuration, replacing direct @server.tool() decorators.
 """
 
 import logging
+import os
 from typing import Set, Optional, Callable
 
 from auth.oauth_config import is_oauth21_enabled
@@ -13,6 +14,16 @@ from auth.permissions import is_permissions_mode, get_allowed_scopes_set
 from auth.scopes import is_read_only_mode, get_all_read_only_scopes
 
 logger = logging.getLogger(__name__)
+
+
+def is_gws_only_mode() -> bool:
+    """Check if GWS-only mode is enabled via environment variable.
+
+    When enabled, only the 'gws' tool is exposed in MCP's tools/list response.
+    Individual tools remain registered internally for gws to invoke them.
+    """
+    val = os.getenv("WORKSPACE_MCP_GWS_ONLY", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
 
 # Global registry of enabled tools
 _enabled_tools: Optional[Set[str]] = None
@@ -106,11 +117,13 @@ def filter_server_tools(server):
     enabled_tools = get_enabled_tools()
     oauth21_enabled = is_oauth21_enabled()
     permissions_mode = is_permissions_mode()
+    gws_only_mode = is_gws_only_mode()
     if (
         enabled_tools is None
         and not oauth21_enabled
         and not is_read_only_mode()
         and not permissions_mode
+        and not gws_only_mode
     ):
         return
 
@@ -179,6 +192,14 @@ def filter_server_tools(server):
                         required_scopes,
                     )
                     tools_to_remove.add(tool_name)
+
+    # 5. GWS-only mode: keep only the 'gws' unified tool in tools/list
+    # Individual tools remain registered internally for gws to invoke via handler lookup.
+    if gws_only_mode:
+        for tool_name in tool_components:
+            if tool_name != "gws" and tool_name not in tools_to_remove:
+                tools_to_remove.add(tool_name)
+        logger.info("GWS-only mode: Exposing only 'gws' tool in tools/list")
 
     for tool_name in tools_to_remove:
         try:
