@@ -310,8 +310,9 @@ def main():
         "appscript": lambda: import_module("gappsscript.apps_script_tools"),
     }
 
-    # Import the unified gws tool (staged tool pattern)
+    # Import unified tools (staged tool pattern + raw API)
     import_module("core.generic_api_tool")
+    import_module("core.raw_api_tool")
 
     tool_icons = {
         "gmail": "📧",

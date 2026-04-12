@@ -193,13 +193,14 @@ def filter_server_tools(server):
                     )
                     tools_to_remove.add(tool_name)
 
-    # 5. GWS-only mode: keep only the 'gws' unified tool in tools/list
+    # 5. GWS-only mode: keep only unified tools (gws, gws_raw_api) in tools/list
     # Individual tools remain registered internally for gws to invoke via handler lookup.
+    _GWS_MODE_KEEP = {"gws", "gws_raw_api"}
     if gws_only_mode:
         for tool_name in tool_components:
-            if tool_name != "gws" and tool_name not in tools_to_remove:
+            if tool_name not in _GWS_MODE_KEEP and tool_name not in tools_to_remove:
                 tools_to_remove.add(tool_name)
-        logger.info("GWS-only mode: Exposing only 'gws' tool in tools/list")
+        logger.info("GWS-only mode: Exposing only %s in tools/list", sorted(_GWS_MODE_KEEP))
 
     for tool_name in tools_to_remove:
         try:
