@@ -5,6 +5,7 @@ This module provides MCP tools for interacting with Google Drive API.
 """
 
 import asyncio
+import json
 import logging
 import io
 import httpx
@@ -15,7 +16,7 @@ from contextlib import asynccontextmanager
 
 from typing import AsyncIterator, Optional, List, Dict, Any
 from tempfile import NamedTemporaryFile
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 from urllib.request import url2pathname
 from pathlib import Path
 
@@ -814,6 +815,113 @@ async def create_drive_file(
     confirmation_message = f"Successfully created file '{created_file.get('name', file_name)}' (ID: {created_file.get('id', 'N/A')}) in folder '{folder_id}' for {user_google_email}. Link: {link}"
     logger.info(f"Successfully created file. Link: {link}")
     return confirmation_message
+
+
+DRIVE_RESUMABLE_UPLOAD_ENDPOINT = "https://www.googleapis.com/upload/drive/v3/files"
+UPLOAD_SESSION_RESPONSE_FIELDS = "id,name,mimeType,size,md5Checksum,parents,webViewLink"
+
+
+@server.tool()
+@handle_http_errors("create_drive_upload_session", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def create_drive_upload_session(
+    service,
+    user_google_email: str,
+    file_name: str,
+    folder_id: str = "root",
+    mime_type: str = "application/octet-stream",
+    file_size: Optional[int] = None,
+    description: Optional[str] = None,
+) -> str:
+    """
+    Starts a resumable upload to Google Drive and returns a one-time upload URL.
+
+    The caller then sends the file bytes straight to Google from its own
+    environment (for example with curl), so the file content never passes
+    through tool arguments. Use this for binary files such as PDFs or images
+    that exist on the caller's side.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        file_name (str): The name for the new file.
+        folder_id (str): The ID of the parent folder. Defaults to 'root'. Folders in shared drives are supported.
+        mime_type (str): The MIME type of the bytes to be uploaded (e.g. 'application/pdf'). Defaults to 'application/octet-stream'.
+        file_size (Optional[int]): The exact size in bytes, if known. When given, Drive rejects an upload of any other size.
+        description (Optional[str]): An optional description for the file.
+
+    Returns:
+        str: The upload URL and the command to send the file with.
+    """
+    logger.info(
+        f"[create_drive_upload_session] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}, MIME: {mime_type}, Size: {file_size}"
+    )
+    if file_size is not None and (not isinstance(file_size, int) or file_size < 0):
+        raise Exception("file_size must be a non-negative integer number of bytes.")
+
+    resolved_folder_id = await resolve_folder_id(service, folder_id)
+    metadata: Dict[str, Any] = {
+        "name": file_name,
+        "parents": [resolved_folder_id],
+        "mimeType": mime_type,
+    }
+    if description:
+        metadata["description"] = description
+
+    headers = {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": mime_type,
+    }
+    if file_size is not None:
+        headers["X-Upload-Content-Length"] = str(file_size)
+
+    query = urlencode(
+        {
+            "uploadType": "resumable",
+            "supportsAllDrives": "true",
+            "fields": UPLOAD_SESSION_RESPONSE_FIELDS,
+        }
+    )
+    # service._http is the authorized HTTP client the Drive service was built
+    # with; it attaches (and refreshes) the user's credentials.
+    response, body = await asyncio.to_thread(
+        service._http.request,
+        f"{DRIVE_RESUMABLE_UPLOAD_ENDPOINT}?{query}",
+        method="POST",
+        body=json.dumps(metadata),
+        headers=headers,
+    )
+    status = int(getattr(response, "status", 0) or 0)
+    if status != 200:
+        detail = body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body)
+        raise Exception(
+            f"Drive did not start the upload (HTTP {status}): {detail[:500]}"
+        )
+    upload_url = response.get("location")
+    if not upload_url:
+        raise Exception("Drive started the upload but returned no upload URL.")
+
+    # The upload URL is a bearer capability for this one upload: do not log it.
+    logger.info(
+        f"[create_drive_upload_session] Upload session created for '{file_name}' in folder '{resolved_folder_id}'."
+    )
+    size_note = (
+        f"Drive will accept exactly {file_size} bytes."
+        if file_size is not None
+        else "Drive will accept a single file of any size."
+    )
+    return (
+        f"Upload session created for '{file_name}' in folder '{folder_id}' for {user_google_email}. {size_note}\n"
+        "Upload URL (valid for about one week, usable for this one file only; anyone holding it can "
+        "upload this file, so do not post it in chats or documents):\n"
+        f"{upload_url}\n\n"
+        "Send the file bytes with a single PUT request, for example:\n"
+        f'curl -sS -X PUT -H "Content-Type: {mime_type}" --upload-file <local-file> "<upload URL>"\n\n'
+        "On success Drive answers HTTP 200 with JSON of the new file "
+        f"({UPLOAD_SESSION_RESPONSE_FIELDS}); compare size and md5Checksum with the local file. "
+        "If the upload was interrupted, ask how much arrived with "
+        'curl -sS -X PUT -H "Content-Length: 0" -H "Content-Range: bytes */<total size>" "<upload URL>" '
+        "and resume from there."
+    )
 
 
 # Mapping of file extensions to source MIME types for Google Docs conversion

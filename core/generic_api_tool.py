@@ -9,8 +9,13 @@ This module provides a unified Google Workspace tool that uses a staged pattern:
 This pattern conserves context by allowing incremental discovery of capabilities.
 """
 
+import inspect
 import logging
-from typing import Any, Dict, List, Optional
+import re
+import types
+import typing
+from importlib import import_module
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.server import server
 
@@ -27,102 +32,33 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "list_calendars": {
                 "description": "List all calendars accessible to the user",
-                "required_fields": {},
-                "optional_fields": {},
                 "handler": "gcalendar.calendar_tools.list_calendars",
             },
             "get_events": {
                 "description": "Get events from a calendar (single or multiple)",
-                "required_fields": {},
-                "optional_fields": {
-                    "calendar_id": {"type": "str", "description": "Calendar ID (default: primary)", "default": "primary"},
-                    "event_id": {"type": "str", "description": "Specific event ID to retrieve"},
-                    "time_min": {"type": "str", "description": "Start time (RFC3339)"},
-                    "time_max": {"type": "str", "description": "End time (RFC3339)"},
-                    "max_results": {"type": "int", "description": "Maximum events to return", "default": 25},
-                    "query": {"type": "str", "description": "Keyword search"},
-                    "detailed": {"type": "bool", "description": "Include detailed info", "default": False},
-                    "include_attachments": {"type": "bool", "description": "Include attachment info", "default": False},
-                },
                 "handler": "gcalendar.calendar_tools.get_events",
             },
             "manage_event": {
-                "description": "Create, modify, delete, or RSVP to calendar events",
-                "required_fields": {
-                    "action": {"type": "str", "description": "Action: create, modify, delete, or rsvp"},
-                },
-                "optional_fields": {
-                    "event_id": {"type": "str", "description": "Event ID (required for modify/delete/rsvp)"},
-                    "calendar_id": {"type": "str", "description": "Calendar ID", "default": "primary"},
-                    "summary": {"type": "str", "description": "Event title"},
-                    "start_time": {"type": "str", "description": "Start time (RFC3339 or YYYY-MM-DD)"},
-                    "end_time": {"type": "str", "description": "End time (RFC3339 or YYYY-MM-DD)"},
-                    "description": {"type": "str", "description": "Event description"},
-                    "location": {"type": "str", "description": "Event location"},
-                    "attendees": {"type": "List[str]", "description": "List of attendee emails"},
-                    "timezone": {"type": "str", "description": "IANA timezone"},
-                    "add_google_meet": {"type": "bool", "description": "Add Google Meet link", "default": False},
-                    "response": {"type": "str", "description": "RSVP response (accepted/declined/tentative)"},
-                    "rsvp_comment": {"type": "str", "description": "RSVP comment"},
-                    "send_updates": {"type": "str", "description": "Notification behavior"},
-                },
+                "description": "Create, update, delete, or RSVP to calendar events",
                 "handler": "gcalendar.calendar_tools.manage_event",
             },
             "manage_out_of_office": {
                 "description": "Manage out-of-office calendar events",
-                "required_fields": {
-                    "action": {"type": "str", "description": "Action: create, list, update, or delete"},
-                },
-                "optional_fields": {
-                    "event_id": {"type": "str", "description": "Event ID (for update/delete)"},
-                    "calendar_id": {"type": "str", "description": "Calendar ID", "default": "primary"},
-                    "title": {"type": "str", "description": "OOO title"},
-                    "start_time": {"type": "str", "description": "Start time"},
-                    "end_time": {"type": "str", "description": "End time"},
-                    "auto_decline_mode": {"type": "str", "description": "Auto-decline mode"},
-                    "decline_message": {"type": "str", "description": "Decline message"},
-                },
                 "handler": "gcalendar.calendar_tools.manage_out_of_office",
+                "aliases": {"title": "summary"},
             },
             "manage_focus_time": {
                 "description": "Manage focus time calendar events",
-                "required_fields": {
-                    "action": {"type": "str", "description": "Action: create, list, update, or delete"},
-                },
-                "optional_fields": {
-                    "event_id": {"type": "str", "description": "Event ID (for update/delete)"},
-                    "calendar_id": {"type": "str", "description": "Calendar ID", "default": "primary"},
-                    "title": {"type": "str", "description": "Focus time title"},
-                    "start_time": {"type": "str", "description": "Start time"},
-                    "end_time": {"type": "str", "description": "End time"},
-                    "chat_status": {"type": "str", "description": "Chat status during focus time"},
-                    "auto_decline_mode": {"type": "str", "description": "Auto-decline mode"},
-                    "decline_message": {"type": "str", "description": "Decline message"},
-                },
                 "handler": "gcalendar.calendar_tools.manage_focus_time",
+                "aliases": {"title": "summary"},
             },
             "query_freebusy": {
                 "description": "Query free/busy information for calendars",
-                "required_fields": {
-                    "time_min": {"type": "str", "description": "Start time (RFC3339)"},
-                    "time_max": {"type": "str", "description": "End time (RFC3339)"},
-                },
-                "optional_fields": {
-                    "calendars": {"type": "List[str]", "description": "Calendar IDs to query"},
-                    "timezone": {"type": "str", "description": "Timezone for interpretation"},
-                },
                 "handler": "gcalendar.calendar_tools.query_freebusy",
+                "aliases": {"calendars": "calendar_ids"},
             },
             "create_calendar": {
                 "description": "Create a new calendar",
-                "required_fields": {
-                    "summary": {"type": "str", "description": "Calendar name"},
-                },
-                "optional_fields": {
-                    "description": {"type": "str", "description": "Calendar description"},
-                    "location": {"type": "str", "description": "Geographic location"},
-                    "timezone": {"type": "str", "description": "IANA timezone"},
-                },
                 "handler": "gcalendar.calendar_tools.create_calendar",
             },
         },
@@ -132,155 +68,62 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "search_gmail_messages": {
                 "description": "Search Gmail messages",
-                "required_fields": {
-                    "query": {"type": "str", "description": "Gmail search query"},
-                },
-                "optional_fields": {
-                    "page_size": {"type": "int", "description": "Max results", "default": 10},
-                    "page_token": {"type": "str", "description": "Pagination token"},
-                },
                 "handler": "gmail.gmail_tools.search_gmail_messages",
             },
             "get_gmail_message_content": {
                 "description": "Get full content of a Gmail message",
-                "required_fields": {
-                    "message_id": {"type": "str", "description": "Message ID"},
-                },
-                "optional_fields": {
-                    "body_format": {"type": "str", "description": "Format: text, html, or raw", "default": "text"},
-                },
                 "handler": "gmail.gmail_tools.get_gmail_message_content",
             },
             "get_gmail_messages_content_batch": {
                 "description": "Get content of multiple Gmail messages",
-                "required_fields": {
-                    "message_ids": {"type": "List[str]", "description": "List of message IDs (max 25)"},
-                },
-                "optional_fields": {
-                    "format": {"type": "str", "description": "full or metadata", "default": "full"},
-                    "body_format": {"type": "str", "description": "Body format", "default": "text"},
-                },
                 "handler": "gmail.gmail_tools.get_gmail_messages_content_batch",
             },
             "get_gmail_attachment_content": {
                 "description": "Download a Gmail attachment",
-                "required_fields": {
-                    "message_id": {"type": "str", "description": "Message ID"},
-                    "attachment_id": {"type": "str", "description": "Attachment ID"},
-                },
-                "optional_fields": {},
                 "handler": "gmail.gmail_tools.get_gmail_attachment_content",
             },
             "send_gmail_message": {
                 "description": "Send a Gmail message",
-                "required_fields": {
-                    "to": {"type": "str", "description": "Recipient email(s)"},
-                    "subject": {"type": "str", "description": "Email subject"},
-                    "body": {"type": "str", "description": "Email body"},
-                },
-                "optional_fields": {
-                    "cc": {"type": "str", "description": "CC recipients"},
-                    "bcc": {"type": "str", "description": "BCC recipients"},
-                    "reply_to_message_id": {"type": "str", "description": "Message ID to reply to"},
-                    "attachment_paths": {"type": "List[str]", "description": "Local file paths to attach"},
-                    "attachment_urls": {"type": "List[str]", "description": "URLs to attach"},
-                },
                 "handler": "gmail.gmail_tools.send_gmail_message",
             },
             "draft_gmail_message": {
                 "description": "Create a Gmail draft",
-                "required_fields": {
-                    "to": {"type": "str", "description": "Recipient email(s)"},
-                    "subject": {"type": "str", "description": "Email subject"},
-                    "body": {"type": "str", "description": "Email body"},
-                },
-                "optional_fields": {
-                    "cc": {"type": "str", "description": "CC recipients"},
-                    "bcc": {"type": "str", "description": "BCC recipients"},
-                    "reply_to_message_id": {"type": "str", "description": "Message ID to reply to"},
-                    "attachment_paths": {"type": "List[str]", "description": "Local file paths to attach"},
-                    "attachment_urls": {"type": "List[str]", "description": "URLs to attach"},
-                },
                 "handler": "gmail.gmail_tools.draft_gmail_message",
             },
             "get_gmail_thread_content": {
                 "description": "Get content of a Gmail thread",
-                "required_fields": {
-                    "thread_id": {"type": "str", "description": "Thread ID"},
-                },
-                "optional_fields": {
-                    "body_format": {"type": "str", "description": "Body format", "default": "text"},
-                },
                 "handler": "gmail.gmail_tools.get_gmail_thread_content",
             },
             "get_gmail_threads_content_batch": {
                 "description": "Get content of multiple Gmail threads",
-                "required_fields": {
-                    "thread_ids": {"type": "List[str]", "description": "List of thread IDs"},
-                },
-                "optional_fields": {
-                    "body_format": {"type": "str", "description": "Body format", "default": "text"},
-                },
                 "handler": "gmail.gmail_tools.get_gmail_threads_content_batch",
             },
             "list_gmail_labels": {
                 "description": "List all Gmail labels",
-                "required_fields": {},
-                "optional_fields": {},
                 "handler": "gmail.gmail_tools.list_gmail_labels",
             },
             "manage_gmail_label": {
                 "description": "Create, update, or delete Gmail labels",
-                "required_fields": {
-                    "action": {"type": "str", "description": "Action: create, update, or delete"},
-                },
-                "optional_fields": {
-                    "label_id": {"type": "str", "description": "Label ID (for update/delete)"},
-                    "name": {"type": "str", "description": "Label name"},
-                    "label_list_visibility": {"type": "str", "description": "Visibility in label list"},
-                    "message_list_visibility": {"type": "str", "description": "Visibility in message list"},
-                },
                 "handler": "gmail.gmail_tools.manage_gmail_label",
             },
             "list_gmail_filters": {
                 "description": "List all Gmail filters",
-                "required_fields": {},
-                "optional_fields": {},
                 "handler": "gmail.gmail_tools.list_gmail_filters",
             },
             "manage_gmail_filter": {
                 "description": "Create or delete Gmail filters",
-                "required_fields": {
-                    "action": {"type": "str", "description": "Action: create or delete"},
-                },
-                "optional_fields": {
-                    "filter_id": {"type": "str", "description": "Filter ID (for delete)"},
-                    "criteria": {"type": "dict", "description": "Filter criteria"},
-                    "actions": {"type": "dict", "description": "Filter actions"},
-                },
                 "handler": "gmail.gmail_tools.manage_gmail_filter",
+                "aliases": {"actions": "filter_action"},
             },
             "modify_gmail_message_labels": {
                 "description": "Add or remove labels from a message",
-                "required_fields": {
-                    "message_id": {"type": "str", "description": "Message ID"},
-                },
-                "optional_fields": {
-                    "add_labels": {"type": "List[str]", "description": "Labels to add"},
-                    "remove_labels": {"type": "List[str]", "description": "Labels to remove"},
-                },
                 "handler": "gmail.gmail_tools.modify_gmail_message_labels",
+                "aliases": {"add_labels": "add_label_ids", "remove_labels": "remove_label_ids"},
             },
             "batch_modify_gmail_message_labels": {
                 "description": "Batch modify labels on multiple messages",
-                "required_fields": {
-                    "message_ids": {"type": "List[str]", "description": "List of message IDs"},
-                },
-                "optional_fields": {
-                    "add_labels": {"type": "List[str]", "description": "Labels to add"},
-                    "remove_labels": {"type": "List[str]", "description": "Labels to remove"},
-                },
                 "handler": "gmail.gmail_tools.batch_modify_gmail_message_labels",
+                "aliases": {"add_labels": "add_label_ids", "remove_labels": "remove_label_ids"},
             },
         },
     },
@@ -289,160 +132,68 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "search_drive_files": {
                 "description": "Search files and folders in Drive",
-                "required_fields": {
-                    "query": {"type": "str", "description": "Search query"},
-                },
-                "optional_fields": {
-                    "page_size": {"type": "int", "description": "Max results", "default": 10},
-                    "page_token": {"type": "str", "description": "Pagination token"},
-                    "drive_id": {"type": "str", "description": "Shared drive ID"},
-                    "include_items_from_all_drives": {"type": "bool", "description": "Include shared drive items", "default": True},
-                    "corpora": {"type": "str", "description": "Bodies to query"},
-                    "file_type": {"type": "str", "description": "File type filter"},
-                    "detailed": {"type": "bool", "description": "Include detailed info", "default": True},
-                },
                 "handler": "gdrive.drive_tools.search_drive_files",
             },
             "get_drive_file_content": {
                 "description": "Get content of a Drive file",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {},
                 "handler": "gdrive.drive_tools.get_drive_file_content",
             },
             "get_drive_file_download_url": {
                 "description": "Get download URL for a Drive file",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {},
                 "handler": "gdrive.drive_tools.get_drive_file_download_url",
             },
             "list_drive_items": {
                 "description": "List items in a Drive folder",
-                "required_fields": {},
-                "optional_fields": {
-                    "folder_id": {"type": "str", "description": "Folder ID", "default": "root"},
-                    "page_size": {"type": "int", "description": "Max results", "default": 50},
-                    "page_token": {"type": "str", "description": "Pagination token"},
-                    "order_by": {"type": "str", "description": "Sort order"},
-                    "file_type": {"type": "str", "description": "File type filter"},
-                    "detailed": {"type": "bool", "description": "Include detailed info", "default": True},
-                },
                 "handler": "gdrive.drive_tools.list_drive_items",
             },
             "create_drive_folder": {
                 "description": "Create a folder in Drive",
-                "required_fields": {
-                    "name": {"type": "str", "description": "Folder name"},
-                },
-                "optional_fields": {
-                    "parent_id": {"type": "str", "description": "Parent folder ID"},
-                },
                 "handler": "gdrive.drive_tools.create_drive_folder",
+                "aliases": {"name": "folder_name", "parent_id": "parent_folder_id"},
             },
             "create_drive_file": {
-                "description": "Create a file in Drive",
-                "required_fields": {
-                    "name": {"type": "str", "description": "File name"},
-                },
-                "optional_fields": {
-                    "content": {"type": "str", "description": "File content"},
-                    "content_url": {"type": "str", "description": "URL to download content from"},
-                    "mime_type": {"type": "str", "description": "MIME type"},
-                    "parent_id": {"type": "str", "description": "Parent folder ID"},
-                    "convert_to": {"type": "str", "description": "Convert to Google format"},
-                },
+                "description": "Create a file in Drive from text content or from a URL the server can fetch. To upload a file from your own environment, use create_drive_upload_session",
                 "handler": "gdrive.drive_tools.create_drive_file",
+                "aliases": {"name": "file_name", "parent_id": "folder_id", "content_url": "fileUrl", "file_url": "fileUrl"},
+            },
+            "create_drive_upload_session": {
+                "description": "Start an upload of a file from your own environment (e.g. a PDF): returns a one-time URL to PUT the bytes to with curl, so the content never passes through tool arguments",
+                "handler": "gdrive.drive_tools.create_drive_upload_session",
+                "aliases": {"name": "file_name", "parent_id": "folder_id"},
             },
             "import_to_google_doc": {
                 "description": "Import content to Google Docs format",
-                "required_fields": {
-                    "name": {"type": "str", "description": "Document name"},
-                },
-                "optional_fields": {
-                    "content": {"type": "str", "description": "Text/HTML/Markdown content"},
-                    "source_url": {"type": "str", "description": "URL to import from"},
-                    "parent_id": {"type": "str", "description": "Parent folder ID"},
-                },
                 "handler": "gdrive.drive_tools.import_to_google_doc",
+                "aliases": {"name": "file_name", "parent_id": "folder_id", "source_url": "file_url"},
             },
             "get_drive_file_permissions": {
                 "description": "Get permissions for a Drive file",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {},
                 "handler": "gdrive.drive_tools.get_drive_file_permissions",
             },
             "check_drive_file_public_access": {
-                "description": "Check if a Drive file is publicly accessible",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {},
+                "description": "Check whether files with a given name are publicly accessible",
                 "handler": "gdrive.drive_tools.check_drive_file_public_access",
             },
             "update_drive_file": {
                 "description": "Update a Drive file's content or metadata",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {
-                    "name": {"type": "str", "description": "New file name"},
-                    "content": {"type": "str", "description": "New file content"},
-                    "content_url": {"type": "str", "description": "URL to download content from"},
-                    "mime_type": {"type": "str", "description": "New MIME type"},
-                    "add_parents": {"type": "str", "description": "Parent IDs to add"},
-                    "remove_parents": {"type": "str", "description": "Parent IDs to remove"},
-                },
                 "handler": "gdrive.drive_tools.update_drive_file",
             },
             "get_drive_shareable_link": {
                 "description": "Get shareable link for a Drive file",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {},
                 "handler": "gdrive.drive_tools.get_drive_shareable_link",
             },
             "manage_drive_access": {
                 "description": "Manage sharing and permissions for Drive files",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                    "action": {"type": "str", "description": "Action: grant, update, revoke, or list"},
-                },
-                "optional_fields": {
-                    "email": {"type": "str", "description": "User/group email"},
-                    "role": {"type": "str", "description": "Permission role"},
-                    "share_type": {"type": "str", "description": "Share type: user, group, domain, or anyone"},
-                    "permission_id": {"type": "str", "description": "Permission ID"},
-                    "send_notification": {"type": "bool", "description": "Send notification email"},
-                },
                 "handler": "gdrive.drive_tools.manage_drive_access",
+                "aliases": {"email": "share_with"},
             },
             "copy_drive_file": {
                 "description": "Copy a Drive file",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "Source file ID"},
-                },
-                "optional_fields": {
-                    "name": {"type": "str", "description": "New file name"},
-                    "parent_id": {"type": "str", "description": "Destination folder ID"},
-                },
                 "handler": "gdrive.drive_tools.copy_drive_file",
+                "aliases": {"parent_id": "parent_folder_id"},
             },
             "set_drive_file_permissions": {
                 "description": "Set link sharing and permissions for a Drive file",
-                "required_fields": {
-                    "file_id": {"type": "str", "description": "File ID"},
-                },
-                "optional_fields": {
-                    "link_sharing": {"type": "str", "description": "Link sharing: off, reader, commenter, writer"},
-                    "writers_can_share": {"type": "bool", "description": "Whether editors can share"},
-                    "copy_requires_writer_permission": {"type": "bool", "description": "Prevent copying/downloading"},
-                },
                 "handler": "gdrive.drive_tools.set_drive_file_permissions",
             },
         },
@@ -452,226 +203,96 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "search_docs": {
                 "description": "Search Google Docs by name",
-                "required_fields": {
-                    "query": {"type": "str", "description": "Search query"},
-                },
-                "optional_fields": {
-                    "page_size": {"type": "int", "description": "Max results", "default": 10},
-                },
                 "handler": "gdocs.docs_tools.search_docs",
+                "hints": {"query": "Search query", "page_size": "Max results"},
             },
             "get_doc_content": {
                 "description": "Get content of a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {
-                    "suggestions_view_mode": {"type": "str", "description": "How to render suggestions", "default": "DEFAULT_FOR_CURRENT_ACCESS"},
-                },
                 "handler": "gdocs.docs_tools.get_doc_content",
             },
             "list_docs_in_folder": {
                 "description": "List Google Docs in a folder",
-                "required_fields": {},
-                "optional_fields": {
-                    "folder_id": {"type": "str", "description": "Folder ID", "default": "root"},
-                    "page_size": {"type": "int", "description": "Max results", "default": 100},
-                },
                 "handler": "gdocs.docs_tools.list_docs_in_folder",
+                "hints": {"folder_id": "Folder ID", "page_size": "Max results"},
             },
             "create_doc": {
                 "description": "Create a new Google Doc",
-                "required_fields": {
-                    "title": {"type": "str", "description": "Document title"},
-                },
-                "optional_fields": {
-                    "content": {"type": "str", "description": "Initial content"},
-                },
                 "handler": "gdocs.docs_tools.create_doc",
             },
             "modify_doc_text": {
                 "description": "Modify text in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "start_index": {"type": "int", "description": "Start index"},
-                },
-                "optional_fields": {
-                    "end_index": {"type": "int", "description": "End index"},
-                    "text": {"type": "str", "description": "Text to insert"},
-                    "tab_id": {"type": "str", "description": "Tab ID"},
-                    "segment_id": {"type": "str", "description": "Segment ID"},
-                    "end_of_segment": {"type": "bool", "description": "Insert at end of segment", "default": False},
-                },
                 "handler": "gdocs.docs_tools.modify_doc_text",
             },
             "find_and_replace_doc": {
                 "description": "Find and replace text in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "find_text": {"type": "str", "description": "Text to find"},
-                    "replace_text": {"type": "str", "description": "Replacement text"},
-                },
-                "optional_fields": {
-                    "match_case": {"type": "bool", "description": "Case sensitive", "default": False},
-                },
                 "handler": "gdocs.docs_tools.find_and_replace_doc",
             },
             "insert_doc_elements": {
                 "description": "Insert elements (text, page breaks, tables) into a Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "elements": {"type": "List[dict]", "description": "Elements to insert"},
-                },
-                "optional_fields": {},
                 "handler": "gdocs.docs_tools.insert_doc_elements",
             },
             "insert_doc_image": {
                 "description": "Insert an image into a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "image_uri": {"type": "str", "description": "Image URL or Drive file ID"},
-                    "index": {"type": "int", "description": "Insert position"},
-                },
-                "optional_fields": {
-                    "width": {"type": "float", "description": "Width in points"},
-                    "height": {"type": "float", "description": "Height in points"},
-                },
                 "handler": "gdocs.docs_tools.insert_doc_image",
+                "aliases": {"image_uri": "image_source"},
             },
             "update_doc_headers_footers": {
                 "description": "Update headers and footers in a Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {
-                    "header_text": {"type": "str", "description": "Header text"},
-                    "footer_text": {"type": "str", "description": "Footer text"},
-                },
                 "handler": "gdocs.docs_tools.update_doc_headers_footers",
             },
             "batch_update_doc": {
                 "description": "Batch update a Google Doc with multiple requests",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "requests": {"type": "List[dict]", "description": "List of update requests"},
-                },
-                "optional_fields": {},
                 "handler": "gdocs.docs_tools.batch_update_doc",
             },
             "inspect_doc_structure": {
                 "description": "Inspect the structure of a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {
-                    "start_index": {"type": "int", "description": "Start index"},
-                    "end_index": {"type": "int", "description": "End index"},
-                },
                 "handler": "gdocs.docs_tools.inspect_doc_structure",
             },
             "create_table_with_data": {
                 "description": "Create a table with data in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "data": {"type": "List[List[str]]", "description": "Table data (2D array)"},
-                },
-                "optional_fields": {
-                    "index": {"type": "int", "description": "Insert position"},
-                    "end_of_segment": {"type": "bool", "description": "Insert at end", "default": True},
-                },
                 "handler": "gdocs.docs_tools.create_table_with_data",
+                "aliases": {"data": "table_data"},
             },
             "debug_table_structure": {
                 "description": "Debug table structure in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "table_index": {"type": "int", "description": "Table index (0-based)"},
-                },
-                "optional_fields": {},
                 "handler": "gdocs.docs_tools.debug_table_structure",
             },
             "export_doc_to_pdf": {
                 "description": "Export a Google Doc to PDF",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {
-                    "destination_folder_id": {"type": "str", "description": "Destination folder ID"},
-                    "output_filename": {"type": "str", "description": "Output file name"},
-                },
                 "handler": "gdocs.docs_tools.export_doc_to_pdf",
+                "aliases": {"destination_folder_id": "folder_id", "output_filename": "pdf_filename"},
             },
             "update_paragraph_style": {
                 "description": "Update paragraph style in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {
-                    "start_index": {"type": "int", "description": "Start index"},
-                    "end_index": {"type": "int", "description": "End index"},
-                    "heading_level": {"type": "str", "description": "Heading level (HEADING_1, etc.)"},
-                    "alignment": {"type": "str", "description": "Text alignment"},
-                },
                 "handler": "gdocs.docs_tools.update_paragraph_style",
             },
             "get_doc_as_markdown": {
                 "description": "Get Google Doc content as Markdown",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {
-                    "include_comments": {"type": "bool", "description": "Include comments", "default": False},
-                },
                 "handler": "gdocs.docs_tools.get_doc_as_markdown",
             },
             "insert_doc_tab": {
                 "description": "Insert a new tab in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "tab_title": {"type": "str", "description": "Tab title"},
-                },
-                "optional_fields": {},
                 "handler": "gdocs.docs_tools.insert_doc_tab",
+                "aliases": {"tab_title": "title"},
             },
             "delete_doc_tab": {
                 "description": "Delete a tab from a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "tab_id": {"type": "str", "description": "Tab ID to delete"},
-                },
-                "optional_fields": {},
                 "handler": "gdocs.docs_tools.delete_doc_tab",
             },
             "update_doc_tab": {
                 "description": "Update a tab's properties in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "tab_id": {"type": "str", "description": "Tab ID to update"},
-                },
-                "optional_fields": {
-                    "new_title": {"type": "str", "description": "New tab title"},
-                },
                 "handler": "gdocs.docs_tools.update_doc_tab",
+                "aliases": {"new_title": "title"},
             },
             "list_document_comments": {
                 "description": "List all comments in a Google Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                },
-                "optional_fields": {},
                 "handler": "gdocs.docs_tools.list_document_comments",
+                "hints": {"document_id": "Document ID"},
             },
             "manage_document_comment": {
                 "description": "Create, reply to, or resolve comments in a Doc",
-                "required_fields": {
-                    "document_id": {"type": "str", "description": "Document ID"},
-                    "action": {"type": "str", "description": "Action: create, reply, or resolve"},
-                },
-                "optional_fields": {
-                    "comment_content": {"type": "str", "description": "Comment text"},
-                    "comment_id": {"type": "str", "description": "Comment ID (for reply/resolve)"},
-                },
                 "handler": "gdocs.docs_tools.manage_document_comment",
+                "hints": {"document_id": "Document ID", "action": "Action: create, reply, or resolve", "comment_content": "Comment text", "comment_id": "Comment ID (for reply/resolve)"},
             },
         },
     },
@@ -680,175 +301,73 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "list_spreadsheets": {
                 "description": "List spreadsheets from Drive",
-                "required_fields": {},
-                "optional_fields": {
-                    "max_results": {"type": "int", "description": "Max results", "default": 25},
-                },
                 "handler": "gsheets.sheets_tools.list_spreadsheets",
             },
             "get_spreadsheet_info": {
                 "description": "Get spreadsheet metadata and sheets list",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.get_spreadsheet_info",
             },
             "read_sheet_values": {
                 "description": "Read values from a sheet range",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                },
-                "optional_fields": {
-                    "range_name": {"type": "str", "description": "Range (e.g., Sheet1!A1:D10)", "default": "A1:Z1000"},
-                    "include_hyperlinks": {"type": "bool", "description": "Include hyperlinks", "default": False},
-                    "include_notes": {"type": "bool", "description": "Include notes", "default": False},
-                    "include_formulas": {"type": "bool", "description": "Include formulas", "default": False},
-                },
                 "handler": "gsheets.sheets_tools.read_sheet_values",
             },
             "modify_sheet_values": {
                 "description": "Write or clear values in a sheet range",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "range_name": {"type": "str", "description": "Range to modify"},
-                },
-                "optional_fields": {
-                    "values": {"type": "List[List[str]]", "description": "2D array of values"},
-                    "value_input_option": {"type": "str", "description": "RAW or USER_ENTERED", "default": "USER_ENTERED"},
-                    "clear_values": {"type": "bool", "description": "Clear the range", "default": False},
-                },
                 "handler": "gsheets.sheets_tools.modify_sheet_values",
             },
             "format_sheet_range": {
                 "description": "Format cells in a sheet range",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "range_name": {"type": "str", "description": "Range to format"},
-                },
-                "optional_fields": {
-                    "bold": {"type": "bool", "description": "Bold text"},
-                    "italic": {"type": "bool", "description": "Italic text"},
-                    "font_size": {"type": "int", "description": "Font size"},
-                    "font_color": {"type": "str", "description": "Font color (hex)"},
-                    "background_color": {"type": "str", "description": "Background color (hex)"},
-                    "horizontal_alignment": {"type": "str", "description": "Alignment"},
-                },
                 "handler": "gsheets.sheets_tools.format_sheet_range",
+                "aliases": {"font_color": "text_color"},
             },
             "manage_conditional_formatting": {
                 "description": "Manage conditional formatting rules",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "action": {"type": "str", "description": "Action: create, delete, or list"},
-                },
-                "optional_fields": {
-                    "sheet_name": {"type": "str", "description": "Sheet name"},
-                    "range_name": {"type": "str", "description": "Range for rule"},
-                    "rule_index": {"type": "int", "description": "Rule index (for delete)"},
-                    "condition_type": {"type": "str", "description": "Condition type"},
-                    "condition_values": {"type": "List[str]", "description": "Condition values"},
-                    "format_options": {"type": "dict", "description": "Format options"},
-                },
                 "handler": "gsheets.sheets_tools.manage_conditional_formatting",
             },
             "create_spreadsheet": {
                 "description": "Create a new spreadsheet",
-                "required_fields": {
-                    "title": {"type": "str", "description": "Spreadsheet title"},
-                },
-                "optional_fields": {
-                    "sheet_titles": {"type": "List[str]", "description": "Initial sheet names"},
-                },
                 "handler": "gsheets.sheets_tools.create_spreadsheet",
+                "aliases": {"sheet_titles": "sheet_names"},
             },
             "create_sheet": {
                 "description": "Add a new sheet to an existing spreadsheet",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "title": {"type": "str", "description": "Sheet title"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.create_sheet",
+                "aliases": {"title": "sheet_name"},
             },
             "list_sheet_tables": {
                 "description": "List tables (filter views) in a spreadsheet",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.list_sheet_tables",
             },
             "append_table_rows": {
                 "description": "Append rows to a sheet table",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "range_name": {"type": "str", "description": "Table range"},
-                    "values": {"type": "List[List[str]]", "description": "Rows to append"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.append_table_rows",
             },
             "append_sheet_values": {
                 "description": "Append values to a sheet",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "range_name": {"type": "str", "description": "Range to append to"},
-                    "values": {"type": "List[List[str]]", "description": "Values to append"},
-                },
-                "optional_fields": {
-                    "value_input_option": {"type": "str", "description": "RAW or USER_ENTERED", "default": "USER_ENTERED"},
-                },
                 "handler": "gsheets.sheets_tools.append_sheet_values",
+                "aliases": {"range_name": "range"},
             },
             "batch_read_sheet_values": {
                 "description": "Read multiple ranges in one request",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "ranges": {"type": "List[str]", "description": "List of ranges"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.batch_read_sheet_values",
             },
             "batch_modify_sheet_values": {
                 "description": "Write to multiple ranges in one request",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "data": {"type": "List[dict]", "description": "List of {range, values} objects"},
-                },
-                "optional_fields": {
-                    "value_input_option": {"type": "str", "description": "RAW or USER_ENTERED", "default": "USER_ENTERED"},
-                },
                 "handler": "gsheets.sheets_tools.batch_modify_sheet_values",
             },
             "batch_update_spreadsheet": {
                 "description": "Batch update spreadsheet with multiple requests",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "requests": {"type": "List[dict]", "description": "List of update requests"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.batch_update_spreadsheet",
             },
             "list_spreadsheet_comments": {
                 "description": "List all comments in a spreadsheet",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                },
-                "optional_fields": {},
                 "handler": "gsheets.sheets_tools.list_spreadsheet_comments",
+                "hints": {"spreadsheet_id": "Spreadsheet ID"},
             },
             "manage_spreadsheet_comment": {
                 "description": "Create, reply to, or resolve comments",
-                "required_fields": {
-                    "spreadsheet_id": {"type": "str", "description": "Spreadsheet ID"},
-                    "action": {"type": "str", "description": "Action: create, reply, or resolve"},
-                },
-                "optional_fields": {
-                    "comment_content": {"type": "str", "description": "Comment text"},
-                    "comment_id": {"type": "str", "description": "Comment ID (for reply/resolve)"},
-                },
                 "handler": "gsheets.sheets_tools.manage_spreadsheet_comment",
+                "hints": {"spreadsheet_id": "Spreadsheet ID", "action": "Action: create, reply, or resolve", "comment_content": "Comment text", "comment_id": "Comment ID (for reply/resolve)"},
             },
         },
     },
@@ -857,68 +376,33 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "create_presentation": {
                 "description": "Create a new presentation",
-                "required_fields": {},
-                "optional_fields": {
-                    "title": {"type": "str", "description": "Presentation title", "default": "Untitled Presentation"},
-                },
                 "handler": "gslides.slides_tools.create_presentation",
             },
             "get_presentation": {
                 "description": "Get presentation details",
-                "required_fields": {
-                    "presentation_id": {"type": "str", "description": "Presentation ID"},
-                },
-                "optional_fields": {},
                 "handler": "gslides.slides_tools.get_presentation",
             },
             "batch_update_presentation": {
                 "description": "Batch update a presentation",
-                "required_fields": {
-                    "presentation_id": {"type": "str", "description": "Presentation ID"},
-                    "requests": {"type": "List[dict]", "description": "List of update requests"},
-                },
-                "optional_fields": {},
                 "handler": "gslides.slides_tools.batch_update_presentation",
             },
             "get_page": {
                 "description": "Get details about a specific slide",
-                "required_fields": {
-                    "presentation_id": {"type": "str", "description": "Presentation ID"},
-                    "page_object_id": {"type": "str", "description": "Page/slide ID"},
-                },
-                "optional_fields": {},
                 "handler": "gslides.slides_tools.get_page",
             },
             "get_page_thumbnail": {
                 "description": "Get thumbnail URL for a slide",
-                "required_fields": {
-                    "presentation_id": {"type": "str", "description": "Presentation ID"},
-                    "page_object_id": {"type": "str", "description": "Page/slide ID"},
-                },
-                "optional_fields": {
-                    "thumbnail_size": {"type": "str", "description": "Size: LARGE, MEDIUM, SMALL", "default": "MEDIUM"},
-                },
                 "handler": "gslides.slides_tools.get_page_thumbnail",
             },
             "list_presentation_comments": {
                 "description": "List all comments in a presentation",
-                "required_fields": {
-                    "presentation_id": {"type": "str", "description": "Presentation ID"},
-                },
-                "optional_fields": {},
                 "handler": "gslides.slides_tools.list_presentation_comments",
+                "hints": {"presentation_id": "Presentation ID"},
             },
             "manage_presentation_comment": {
                 "description": "Create, reply to, or resolve comments",
-                "required_fields": {
-                    "presentation_id": {"type": "str", "description": "Presentation ID"},
-                    "action": {"type": "str", "description": "Action: create, reply, or resolve"},
-                },
-                "optional_fields": {
-                    "comment_content": {"type": "str", "description": "Comment text"},
-                    "comment_id": {"type": "str", "description": "Comment ID (for reply/resolve)"},
-                },
                 "handler": "gslides.slides_tools.manage_presentation_comment",
+                "hints": {"presentation_id": "Presentation ID", "action": "Action: create, reply, or resolve", "comment_content": "Comment text", "comment_id": "Comment ID (for reply/resolve)"},
             },
         },
     },
@@ -927,61 +411,26 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "create_form": {
                 "description": "Create a new form",
-                "required_fields": {
-                    "title": {"type": "str", "description": "Form title"},
-                },
-                "optional_fields": {
-                    "description": {"type": "str", "description": "Form description"},
-                    "document_title": {"type": "str", "description": "Document title"},
-                },
                 "handler": "gforms.forms_tools.create_form",
             },
             "get_form": {
                 "description": "Get form details",
-                "required_fields": {
-                    "form_id": {"type": "str", "description": "Form ID"},
-                },
-                "optional_fields": {},
                 "handler": "gforms.forms_tools.get_form",
             },
             "set_publish_settings": {
                 "description": "Update form publish settings",
-                "required_fields": {
-                    "form_id": {"type": "str", "description": "Form ID"},
-                },
-                "optional_fields": {
-                    "publish_as_template": {"type": "bool", "description": "Publish as template", "default": False},
-                    "require_authentication": {"type": "bool", "description": "Require sign-in", "default": False},
-                },
                 "handler": "gforms.forms_tools.set_publish_settings",
             },
             "get_form_response": {
                 "description": "Get a specific form response",
-                "required_fields": {
-                    "form_id": {"type": "str", "description": "Form ID"},
-                    "response_id": {"type": "str", "description": "Response ID"},
-                },
-                "optional_fields": {},
                 "handler": "gforms.forms_tools.get_form_response",
             },
             "list_form_responses": {
                 "description": "List form responses",
-                "required_fields": {
-                    "form_id": {"type": "str", "description": "Form ID"},
-                },
-                "optional_fields": {
-                    "page_size": {"type": "int", "description": "Max results", "default": 10},
-                    "page_token": {"type": "str", "description": "Pagination token"},
-                },
                 "handler": "gforms.forms_tools.list_form_responses",
             },
             "batch_update_form": {
                 "description": "Batch update a form",
-                "required_fields": {
-                    "form_id": {"type": "str", "description": "Form ID"},
-                    "requests": {"type": "List[dict]", "description": "List of update requests"},
-                },
-                "optional_fields": {},
                 "handler": "gforms.forms_tools.batch_update_form",
             },
         },
@@ -991,72 +440,26 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "list_task_lists": {
                 "description": "List all task lists",
-                "required_fields": {},
-                "optional_fields": {
-                    "max_results": {"type": "int", "description": "Max results", "default": 1000},
-                    "page_token": {"type": "str", "description": "Pagination token"},
-                },
                 "handler": "gtasks.tasks_tools.list_task_lists",
             },
             "get_task_list": {
                 "description": "Get details of a task list",
-                "required_fields": {
-                    "task_list_id": {"type": "str", "description": "Task list ID"},
-                },
-                "optional_fields": {},
                 "handler": "gtasks.tasks_tools.get_task_list",
             },
             "manage_task_list": {
                 "description": "Create, update, delete, or clear task lists",
-                "required_fields": {
-                    "action": {"type": "str", "description": "Action: create, update, delete, clear_completed"},
-                },
-                "optional_fields": {
-                    "task_list_id": {"type": "str", "description": "Task list ID"},
-                    "title": {"type": "str", "description": "Task list title"},
-                },
                 "handler": "gtasks.tasks_tools.manage_task_list",
             },
             "list_tasks": {
                 "description": "List tasks in a task list",
-                "required_fields": {
-                    "task_list_id": {"type": "str", "description": "Task list ID"},
-                },
-                "optional_fields": {
-                    "max_results": {"type": "int", "description": "Max results", "default": 20},
-                    "page_token": {"type": "str", "description": "Pagination token"},
-                    "show_completed": {"type": "bool", "description": "Show completed tasks", "default": True},
-                    "show_deleted": {"type": "bool", "description": "Show deleted tasks", "default": False},
-                    "show_hidden": {"type": "bool", "description": "Show hidden tasks", "default": False},
-                    "due_max": {"type": "str", "description": "Upper bound for due date"},
-                    "due_min": {"type": "str", "description": "Lower bound for due date"},
-                },
                 "handler": "gtasks.tasks_tools.list_tasks",
             },
             "get_task": {
                 "description": "Get details of a specific task",
-                "required_fields": {
-                    "task_list_id": {"type": "str", "description": "Task list ID"},
-                    "task_id": {"type": "str", "description": "Task ID"},
-                },
-                "optional_fields": {},
                 "handler": "gtasks.tasks_tools.get_task",
             },
             "manage_task": {
                 "description": "Create, update, delete, or move tasks",
-                "required_fields": {
-                    "task_list_id": {"type": "str", "description": "Task list ID"},
-                    "action": {"type": "str", "description": "Action: create, update, delete, move"},
-                },
-                "optional_fields": {
-                    "task_id": {"type": "str", "description": "Task ID"},
-                    "title": {"type": "str", "description": "Task title"},
-                    "notes": {"type": "str", "description": "Task notes"},
-                    "due": {"type": "str", "description": "Due date (RFC3339)"},
-                    "status": {"type": "str", "description": "Status: needsAction or completed"},
-                    "parent": {"type": "str", "description": "Parent task ID"},
-                    "previous": {"type": "str", "description": "Previous sibling task ID"},
-                },
                 "handler": "gtasks.tasks_tools.manage_task",
             },
         },
@@ -1066,65 +469,30 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "list_spaces": {
                 "description": "List Chat spaces (rooms and DMs)",
-                "required_fields": {},
-                "optional_fields": {
-                    "page_size": {"type": "int", "description": "Max results", "default": 100},
-                    "space_type": {"type": "str", "description": "Type: all, room, or dm", "default": "all"},
-                },
                 "handler": "gchat.chat_tools.list_spaces",
+                "hints": {"page_size": "Max results", "space_type": "Type: all, room, or dm"},
             },
             "get_messages": {
                 "description": "Get messages from a Chat space",
-                "required_fields": {
-                    "space_id": {"type": "str", "description": "Space ID"},
-                },
-                "optional_fields": {
-                    "page_size": {"type": "int", "description": "Max results", "default": 50},
-                    "order_by": {"type": "str", "description": "Sort order", "default": "createTime desc"},
-                    "message_filter": {"type": "str", "description": "Filter expression"},
-                },
                 "handler": "gchat.chat_tools.get_messages",
+                "hints": {"space_id": "Space ID", "page_size": "Max results", "order_by": "Sort order"},
             },
             "send_message": {
                 "description": "Send a message to a Chat space",
-                "required_fields": {
-                    "space_id": {"type": "str", "description": "Space ID"},
-                    "message_text": {"type": "str", "description": "Message text"},
-                },
-                "optional_fields": {
-                    "thread_key": {"type": "str", "description": "App-defined thread key"},
-                    "thread_name": {"type": "str", "description": "Thread resource name"},
-                },
                 "handler": "gchat.chat_tools.send_message",
+                "hints": {"space_id": "Space ID", "message_text": "Message text"},
             },
             "search_messages": {
                 "description": "Search messages in Chat spaces",
-                "required_fields": {},
-                "optional_fields": {
-                    "query": {"type": "str", "description": "Search query"},
-                    "space_id": {"type": "str", "description": "Restrict to specific space"},
-                    "page_size": {"type": "int", "description": "Max results", "default": 25},
-                    "time_filter": {"type": "str", "description": "Time filter expression"},
-                    "max_spaces": {"type": "int", "description": "Max spaces to search", "default": 10},
-                },
                 "handler": "gchat.chat_tools.search_messages",
             },
             "create_reaction": {
                 "description": "Add an emoji reaction to a message",
-                "required_fields": {
-                    "message_name": {"type": "str", "description": "Message resource name"},
-                    "emoji": {"type": "str", "description": "Unicode emoji"},
-                },
-                "optional_fields": {},
                 "handler": "gchat.chat_tools.create_reaction",
+                "aliases": {"message_name": "message_id", "emoji": "emoji_unicode"},
             },
             "download_chat_attachment": {
                 "description": "Download a Chat attachment",
-                "required_fields": {
-                    "message_id": {"type": "str", "description": "Message ID"},
-                    "attachment_index": {"type": "int", "description": "Attachment index"},
-                },
-                "optional_fields": {},
                 "handler": "gchat.chat_tools.download_chat_attachment",
             },
         },
@@ -1134,32 +502,136 @@ CATEGORIES: Dict[str, Dict[str, Any]] = {
         "actions": {
             "search_custom": {
                 "description": "Perform a custom search using Programmable Search Engine",
-                "required_fields": {
-                    "q": {"type": "str", "description": "Search query"},
-                },
-                "optional_fields": {
-                    "num": {"type": "int", "description": "Number of results (1-10)", "default": 10},
-                    "start": {"type": "int", "description": "Start index", "default": 1},
-                    "safe": {"type": "str", "description": "Safe search level", "default": "off"},
-                    "search_type": {"type": "str", "description": "Search type (image)"},
-                    "site_search": {"type": "str", "description": "Restrict to site"},
-                    "date_restrict": {"type": "str", "description": "Date restriction"},
-                    "file_type": {"type": "str", "description": "File type filter"},
-                    "language": {"type": "str", "description": "Language code"},
-                    "country": {"type": "str", "description": "Country code"},
-                    "sites": {"type": "List[str]", "description": "List of sites to search"},
-                },
                 "handler": "gsearch.search_tools.search_custom",
             },
             "get_search_engine_info": {
                 "description": "Get Programmable Search Engine metadata",
-                "required_fields": {},
-                "optional_fields": {},
                 "handler": "gsearch.search_tools.get_search_engine_info",
             },
         },
     },
 }
+
+
+# -----------------------------------------------------------------------------
+# Field introspection
+#
+# Field names, required-ness and defaults come from the handler's signature,
+# and descriptions from its docstring "Args:" section, so that what gws shows
+# and accepts can never drift from what the handler actually takes. Each action
+# may also define:
+#   aliases: legacy/alternative field names mapped to real parameter names
+#   hints:   descriptions for parameters that the handler docstring omits
+# -----------------------------------------------------------------------------
+
+# Parameters injected by gws or by the service decorator, never set via fields.
+_INJECTED_PARAMS = frozenset({"service", "user_google_email"})
+_DOC_SECTION_HEADERS = frozenset({"Args:", "Arguments:", "Parameters:"})
+_DOC_ARG_RE = re.compile(r"^(\s+)(\w+)\s*(?:\(([^)]*)\))?\s*:\s*(.*)$")
+_MAX_TYPE_LABEL = 100
+
+
+def _resolve_handler(action_info: Dict[str, Any]) -> Callable[..., Any]:
+    """Import and return the handler function for an action."""
+    module_path, func_name = action_info["handler"].rsplit(".", 1)
+    module = import_module(module_path)
+    handler = getattr(module, func_name)
+    if not callable(handler):
+        raise TypeError(f"Handler {action_info['handler']} is not callable")
+    return handler
+
+
+def _handler_params(handler: Callable[..., Any]) -> Dict[str, inspect.Parameter]:
+    """Return the handler's settable parameters, in signature order."""
+    params: Dict[str, inspect.Parameter] = {}
+    for name, param in inspect.signature(handler).parameters.items():
+        if name in _INJECTED_PARAMS:
+            continue
+        if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+            continue
+        params[name] = param
+    return params
+
+
+def _docstring_args(handler: Callable[..., Any]) -> Dict[str, Tuple[Optional[str], str]]:
+    """Parse a Google-style "Args:" section into {name: (type_label, description)}."""
+    doc = inspect.getdoc(handler) or ""
+    result: Dict[str, Tuple[Optional[str], str]] = {}
+    in_args = False
+    base_indent: Optional[int] = None
+    current: Optional[str] = None
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped in _DOC_SECTION_HEADERS:
+            in_args, base_indent, current = True, None, None
+            continue
+        if not in_args:
+            continue
+        if stripped and not line[:1].isspace():
+            # A new top-level section (e.g. "Returns:") ends the Args block.
+            in_args, current = False, None
+            continue
+        if not stripped:
+            continue
+        indent = len(line) - len(line.lstrip())
+        match = _DOC_ARG_RE.match(line)
+        if match and (base_indent is None or indent <= base_indent):
+            base_indent = indent if base_indent is None else base_indent
+            current = match.group(2)
+            result[current] = (match.group(3), match.group(4).strip())
+        elif current is not None:
+            type_label, text = result[current]
+            result[current] = (type_label, f"{text} {stripped}".strip())
+    return result
+
+
+def _type_label(annotation: Any) -> str:
+    """Render a type annotation compactly (Annotated/Optional unwrapped)."""
+    if annotation is inspect.Parameter.empty:
+        return "any"
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+    if origin is typing.Annotated:
+        return _type_label(args[0])
+    if origin is typing.Union or (
+        hasattr(types, "UnionType") and isinstance(annotation, types.UnionType)
+    ):
+        members = [a for a in args if a is not type(None)]
+        return " | ".join(_type_label(a) for a in members) or "None"
+    if origin is typing.Literal:
+        return "one of " + ", ".join(repr(a) for a in args)
+    if origin is not None:
+        name = getattr(origin, "__name__", str(origin))
+        if args:
+            return f"{name}[{', '.join(_type_label(a) for a in args)}]"
+        return name
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return str(annotation).replace("typing.", "")
+
+
+def _shorten(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _field_specs(action_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Describe each settable field of an action from its handler."""
+    handler = _resolve_handler(action_info)
+    doc_args = _docstring_args(handler)
+    hints = action_info.get("hints", {})
+    specs = []
+    for name, param in _handler_params(handler).items():
+        doc_type, doc_text = doc_args.get(name, (None, ""))
+        specs.append(
+            {
+                "name": name,
+                "type": _shorten(doc_type or _type_label(param.annotation), _MAX_TYPE_LABEL),
+                "required": param.default is inspect.Parameter.empty,
+                "default": None if param.default is inspect.Parameter.empty else param.default,
+                "description": doc_text or hints.get(name, ""),
+            }
+        )
+    return specs
 
 
 # -----------------------------------------------------------------------------
@@ -1191,6 +663,13 @@ def _format_action_list(category: str) -> str:
     return "\n".join(lines)
 
 
+def _format_field_line(spec: Dict[str, Any]) -> str:
+    default = spec["default"]
+    default_str = "" if spec["required"] or default is None else f" [default: {default!r}]"
+    description = f": {spec['description']}" if spec["description"] else ""
+    return f"  - {spec['name']} ({spec['type']}){default_str}{description}"
+
+
 def _format_field_info(category: str, action: str) -> str:
     """Format the field information for an action."""
     if category not in CATEGORIES:
@@ -1204,25 +683,62 @@ def _format_field_info(category: str, action: str) -> str:
     lines = [f"Action: {category}.{action}"]
     lines.append(f"Description: {action_info['description']}\n")
 
-    # Required fields
-    lines.append("Required fields:")
-    if action_info["required_fields"]:
-        for field_name, field_info in action_info["required_fields"].items():
-            lines.append(f"  - {field_name} ({field_info['type']}): {field_info['description']}")
-    else:
-        lines.append("  (none)")
+    try:
+        specs = _field_specs(action_info)
+    except Exception as e:  # noqa: BLE001 - report instead of failing discovery
+        logger.error(f"Failed to inspect handler for {category}.{action}: {e}", exc_info=True)
+        return f"{lines[0]}\nError: could not inspect the handler: {e}"
 
-    # Optional fields
-    lines.append("\nOptional fields:")
-    if action_info["optional_fields"]:
-        for field_name, field_info in action_info["optional_fields"].items():
-            default_str = f" [default: {field_info['default']}]" if "default" in field_info else ""
-            lines.append(f"  - {field_name} ({field_info['type']}): {field_info['description']}{default_str}")
-    else:
-        lines.append("  (none)")
+    required = [s for s in specs if s["required"]]
+    optional = [s for s in specs if not s["required"]]
+
+    for heading, group in (("Required fields:", required), ("\nOptional fields:", optional)):
+        lines.append(heading)
+        if group:
+            lines.extend(_format_field_line(s) for s in group)
+        else:
+            lines.append("  (none)")
+
+    aliases = action_info.get("aliases", {})
+    if aliases:
+        pairs = ", ".join(f"{old} -> {new}" for old, new in aliases.items())
+        lines.append(f"\nAlso accepted: {pairs}")
 
     lines.append(f"\nUsage: gws(category=\"{category}\", action=\"{action}\", fields={{...}})")
     return "\n".join(lines)
+
+
+def _map_fields(
+    action_info: Dict[str, Any], params: Dict[str, inspect.Parameter], fields: Dict[str, Any]
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Map caller fields onto handler parameters. Returns (kwargs, problems)."""
+    aliases = action_info.get("aliases", {})
+    mapped: Dict[str, Any] = {}
+    sources: Dict[str, str] = {}
+    problems: List[str] = []
+    unknown: List[str] = []
+    for key, value in fields.items():
+        if key == "user_google_email":
+            mapped[key] = value
+            continue
+        target = key if key in params else aliases.get(key)
+        if target is None:
+            unknown.append(key)
+            continue
+        if target in mapped:
+            problems.append(f"'{key}' and '{sources[target]}' both set '{target}'")
+            continue
+        mapped[target] = value
+        sources[target] = key
+    if unknown:
+        problems.insert(0, f"Unknown fields: {', '.join(unknown)}")
+    missing = [
+        name for name, param in params.items()
+        if param.default is inspect.Parameter.empty and name not in mapped
+    ]
+    if missing:
+        problems.append(f"Missing required fields: {', '.join(missing)}")
+    return mapped, problems
 
 
 async def _execute_action(category: str, action: str, fields: dict, user_google_email: str) -> str:
@@ -1235,36 +751,24 @@ async def _execute_action(category: str, action: str, fields: dict, user_google_
         return f"Unknown action: {action} in category {category}"
 
     action_info = cat_info["actions"][action]
-
-    # Validate required fields
-    missing_fields = []
-    for field_name in action_info["required_fields"]:
-        if field_name not in fields:
-            missing_fields.append(field_name)
-
-    if missing_fields:
-        return f"Missing required fields: {', '.join(missing_fields)}\n\n{_format_field_info(category, action)}"
-
-    # Import and call the handler
     handler_path = action_info["handler"]
+
     try:
-        module_path, func_name = handler_path.rsplit(".", 1)
-        from importlib import import_module
-        module = import_module(module_path)
-        handler_func = getattr(module, func_name)
-
-        # Add user_google_email to fields
-        call_args = {"user_google_email": user_google_email, **fields}
-
-        # Call the handler
-        result = await handler_func(**call_args)
-        return result
+        handler_func = _resolve_handler(action_info)
     except ImportError as e:
         logger.error(f"Failed to import handler {handler_path}: {e}")
         return f"Error: Failed to import handler for {category}.{action}: {e}"
-    except AttributeError as e:
+    except (AttributeError, TypeError) as e:
         logger.error(f"Handler function not found {handler_path}: {e}")
         return f"Error: Handler function not found for {category}.{action}: {e}"
+
+    mapped, problems = _map_fields(action_info, _handler_params(handler_func), fields)
+    if problems:
+        return "\n".join(problems) + f"\n\n{_format_field_info(category, action)}"
+
+    try:
+        call_args = {"user_google_email": user_google_email, **mapped}
+        return await handler_func(**call_args)
     except TypeError as e:
         logger.error(f"Invalid arguments for {handler_path}: {e}")
         return f"Error: Invalid arguments for {category}.{action}: {e}"
